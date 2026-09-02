@@ -1,0 +1,23 @@
+main:
+  title: "FamilyHeart"
+  size: 27
+  items:
+    family: { slot: 10, material: PLAYER_HEAD, name: "&6家族", lore: ["&7家族情報を表示"] }
+    spouse: { slot: 11, material: GOLDEN_HELMET, name: "&6配偶者", lore: ["&7配偶者情報"] }
+    parent-child: { slot: 12, material: RED_BED, name: "&6親子関係", lore: ["&7親子関係"] }
+    skinship: { slot: 13, material: PINK_DYE, name: "&dスキンシップ", lore: ["&7hug / kiss / feed"] }
+    requests: { slot: 14, material: PAPER, name: "&e申請", lore: ["&7申請一覧"] }
+    relationship: { slot: 15, material: BOOK, name: "&bRelationship情報", lore: ["&7Relationship一覧"] }
+    settings: { slot: 16, material: COMPARATOR, name: "&7設定", lore: ["&7現在の設定を確認"] }
+  buttons: { back: "&c戻る", confirm: "&a確認", cancel: "&cキャンセル" }
+family:
+  title: "家族"
+relationship:
+  title: "Relationship情報"
+requests:
+  title: "申請"
+skinship:
+  title: "スキンシップ"
+settings:
+  title: "設定"
+empty: "&7表示できる項目はありません。"
