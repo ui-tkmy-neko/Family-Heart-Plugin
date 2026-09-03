@@ -23,7 +23,7 @@ class CustomItemService(val plugin: JavaPlugin, private val settings: Settings) 
     fun definition(mcid: String): CustomItemDefinition? = settings.customItem(mcid)
 
     fun give(player: Player, mcid: String, requestId: Long): Boolean {
-        check(Bukkit.isPrimaryThread) { "CustomItemService.give must run on the main thread" }
+        check(Bukkit.isPrimaryThread()) { "CustomItemService.give must run on the main thread" }
         val definition = definition(mcid) ?: return false
         val item = buildItem(definition, mcid, requestId)
         val leftovers = player.inventory.addItem(item)

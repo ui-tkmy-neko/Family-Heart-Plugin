@@ -38,10 +38,17 @@ class RequestService(
                     }
                     try {
                         dao.create(c, a, b, type, metadata)
-                    } catch (e: SQLIntegrityConstraintViolationException) {
-                        throw nekouidaga.net.familyheartplugin.service.RequestException(
-                            nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
-                        )
+                    } catch (e: Exception) {
+                        // Xerial sqlite-jdbc は UNIQUE制約違反時に SQLIntegrityConstraintViolationException を
+                        // 投げるとは限らない(バージョン依存)ため、型だけでなくSQLiteのエラーメッセージでも判定する。
+                        val isUniqueViolation = e is SQLIntegrityConstraintViolationException ||
+                            (e.message?.contains("UNIQUE constraint failed", ignoreCase = true) == true)
+                        if (isUniqueViolation) {
+                            throw nekouidaga.net.familyheartplugin.service.RequestException(
+                                nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
+                            )
+                        }
+                        throw e
                     }
                 }
             }

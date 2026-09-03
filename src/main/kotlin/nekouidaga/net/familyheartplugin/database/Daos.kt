@@ -131,7 +131,7 @@ class RequestDao {
         // バグ修正: 以前はcreate()が単純INSERTのみで既存のPENDING申請を確認しておらず、
         // 同じ相手に同種の申請を連投すると保留中の申請が際限なく増えていた(⑦)。
         // SQLiteでは単一DB接続で書き込みを直列化しているため、行ロック構文は不要。
-        c.prepareStatement("SELECT * FROM requests WHERE status='PENDING' AND type=? AND ((requester=? AND target=?) OR (requester=? AND target=?))").use {
+        c.prepareStatement("SELECT * FROM requests WHERE status IN ('PENDING','PROCESSING') AND type=? AND ((requester=? AND target=?) OR (requester=? AND target=?))").use {
             it.setString(1, ty.name); it.setString(2, a.toString()); it.setString(3, b.toString()); it.setString(4, b.toString()); it.setString(5, a.toString())
             it.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
         }

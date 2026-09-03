@@ -28,7 +28,13 @@ class PlayerConnectionListener(
     fun join(e: PlayerJoinEvent) {
         val x = e.player
         db.executor.submit {
-            db.connection().use { c -> players.upsert(c, x.uniqueId, x.name) }
+            try {
+                db.connection().use { c -> players.upsert(c, x.uniqueId, x.name) }
+            } catch (t: Throwable) {
+                // 失敗を握りつぶすとplayersテーブル未反映のままMCID検索(findMcid)が
+                // 継続的に外れる原因になるため、必ずログに残す。
+                p.logger.warning("[FamilyHeart] Failed to upsert player ${x.name} on join: ${t.message}")
+            }
         }
         // Join時のDB処理はすべて非同期。Penalty cache更新完了後、Buff適用だけMain Threadで行う。
         rel.load(x.uniqueId) {

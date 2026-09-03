@@ -7,7 +7,7 @@ database:
     # DB非同期処理用ワーカースレッド数。SQLiteの書き込みはHikariの単一コネクションで
     # 直列化されるため、これを増やしても書き込みスループットは上がらない。
     # 同時に大量のDB要求が来る環境で connectionTimeout に近づく場合のみ調整すること。
-    worker-threads: 4
+    worker-threads: 1
   # Writes are persisted transaction-by-transaction immediately after each plugin-side operation.
   sync-interval-ticks: 20
 relationship-limits:

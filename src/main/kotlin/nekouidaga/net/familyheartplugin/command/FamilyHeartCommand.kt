@@ -284,6 +284,7 @@ class FamilyHeartCommand(
                     r.reason == "distance" -> send(s, "general.distance")
                     r.reason.startsWith("cooldown:") -> send(s, "action.cooldown", mapOf("duration" to r.reason.substringAfter(":")))
                     r.reason == "self" -> send(s, "relationship.self")
+                    r.reason == "approval" -> {} // 承認待ち: request.createdはonApprovalコールバックで送信済み/送信予定
                 }
             }
 

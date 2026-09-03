@@ -2,6 +2,7 @@ package nekouidaga.net.familyheartplugin.penalty
 
 import nekouidaga.net.familyheartplugin.database.DatabaseManager
 import nekouidaga.net.familyheartplugin.database.PenaltyDao
+import nekouidaga.net.familyheartplugin.database.tx
 import nekouidaga.net.familyheartplugin.model.FamilyPenalty
 import nekouidaga.net.familyheartplugin.model.PenaltyTargetType
 import nekouidaga.net.familyheartplugin.relationship.RelationshipService
@@ -102,7 +103,7 @@ class PenaltyService(
 
     fun refreshAffectedAsync(ids: Set<UUID>): CompletableFuture<Unit> =
         if (ids.isEmpty()) CompletableFuture.completedFuture(Unit)
-        else CompletableFuture.runAsync({ refreshIds(ids) }, db.executor)
+        else CompletableFuture.runAsync({ refreshIds(ids) }, db.executor).thenApply { Unit }
 
     private fun refreshIds(ids: Collection<UUID>) {
         if (ids.isEmpty()) return
@@ -131,7 +132,7 @@ class PenaltyService(
 
     /** Snapshot online UUIDs without ever blocking a worker thread waiting for the server thread. */
     private fun onlineIdsSnapshot(): CompletableFuture<Set<UUID>> {
-        if (Bukkit.isPrimaryThread) {
+        if (Bukkit.isPrimaryThread()) {
             return CompletableFuture.completedFuture(Bukkit.getOnlinePlayers().mapTo(LinkedHashSet<UUID>()) { it.uniqueId })
         }
         val result = CompletableFuture<Set<UUID>>()
@@ -186,7 +187,7 @@ class PenaltyService(
             id
         }, db.executor)
 
-    fun remove(id: Long): CompletableFuture<Void> =
+    fun remove(id: Long): CompletableFuture<Unit> =
         onlineIdsSnapshot().thenApplyAsync({ online ->
             val existingAndChanged: Pair<FamilyPenalty?, Boolean> = db.connection().use { c -> c.tx {
                 val existing = dao.byId(c, id)

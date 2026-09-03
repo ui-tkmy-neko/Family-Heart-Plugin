@@ -28,7 +28,10 @@ class DatabaseManager(private val log: Logger) {
         val file = c.getString("database.sqlite.file", "familyheart.db") ?: "familyheart.db"
         val busyTimeout = c.getLong("database.sqlite.busy-timeout-ms", 10_000L)
         val maximumPool = 1
-        val workerThreads = c.getInt("database.sqlite.worker-threads", 4).coerceIn(1, 8)
+        // SQLite書き込みはmaximumPool=1で直列化されるため、ワーカースレッドを増やしても
+        // 実際のDBスループットは上がらず、逆に単一コネクション待ちで詰まるスレッドが増えるだけ。
+        // デフォルトはmaximumPoolに合わせて1にし、必要であれば設定で増やせるようにする。
+        val workerThreads = c.getInt("database.sqlite.worker-threads", maximumPool).coerceIn(1, 8)
         executorImpl = Executors.newFixedThreadPool(workerThreads) {
             Thread(it, "FamilyHeart-DB").apply { isDaemon = true }
         }

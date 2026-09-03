@@ -60,6 +60,9 @@ class ActionService(
                 Bukkit.getScheduler().runTask(p, Runnable { onApproval(id) })
             }.exceptionally { t ->
                 p.logger.warning("[FamilyHeart] Failed to create skinship request: ${t.message}")
+                Bukkit.getScheduler().runTask(p, Runnable {
+                    actor.sendMessage(messages.get("general.database-error"))
+                })
                 null
             }
             return Result(false, "approval")
@@ -79,7 +82,7 @@ class ActionService(
     }
 
     private fun doIt(actor: Player, target: Player, action: String, requestId: Long? = null): CompletableFuture<Void> {
-        check(Bukkit.isPrimaryThread) { "ActionService.doIt must run on the main thread" }
+        check(Bukkit.isPrimaryThread()) { "ActionService.doIt must run on the main thread" }
         cooldown["${actor.uniqueId}:$action"] = System.currentTimeMillis() + settings.actionCooldown(action) * 1000L
         counts.computeIfAbsent(actor.uniqueId) { AtomicInteger(0) }.incrementAndGet()
         counts.computeIfAbsent(target.uniqueId) { AtomicInteger(0) }.incrementAndGet()
@@ -132,7 +135,7 @@ class ActionService(
 
     /** Main-thread validation + execution for a SKINSHIP request. The request action must already have a durable INTENT. */
     fun approvedPersistent(actor: Player, target: Player, action: String, requestId: Long): CompletableFuture<Result> {
-        check(Bukkit.isPrimaryThread) { "ActionService.approvedPersistent must run on the main thread" }
+        check(Bukkit.isPrimaryThread()) { "ActionService.approvedPersistent must run on the main thread" }
         if (actor.uniqueId == target.uniqueId) return CompletableFuture.completedFuture(Result(false, "self"))
         if (actor.world.uid != target.world.uid) return CompletableFuture.completedFuture(Result(false, "distance"))
         if (actor.location.distanceSquared(target.location) > settings.range() * settings.range()) return CompletableFuture.completedFuture(Result(false, "distance"))

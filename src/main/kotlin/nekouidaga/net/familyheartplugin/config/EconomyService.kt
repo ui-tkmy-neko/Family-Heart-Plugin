@@ -10,12 +10,21 @@ import java.util.concurrent.CompletableFuture
 class EconomyService(private val plugin: JavaPlugin) {
     @Volatile private var economy: Economy? = null
 
-    fun hook() { economy = plugin.server.servicesManager.getRegistration(Economy::class.java)?.provider }
+    fun hook() {
+        // VaultがサーバーにインストールされていなければEconomyクラス自体が
+        // クラスパス上に存在しないため、参照する前に必ずプラグインの有無を確認する
+        // (そうしないとNoClassDefFoundErrorでonEnable全体が落ちる)。
+        if (Bukkit.getPluginManager().getPlugin("Vault") == null) {
+            plugin.logger.info("[FamilyHeart] Vault not found; economy-based features disabled.")
+            return
+        }
+        economy = plugin.server.servicesManager.getRegistration(Economy::class.java)?.provider
+    }
 
     fun available(): Boolean = economy != null
 
     private fun <T> onMainAsync(action: () -> T): CompletableFuture<T> {
-        if (Bukkit.isPrimaryThread) return CompletableFuture.completedFuture(action())
+        if (Bukkit.isPrimaryThread()) return CompletableFuture.completedFuture(action())
         val future = CompletableFuture<T>()
         Bukkit.getScheduler().runTask(plugin, Runnable {
             try { future.complete(action()) } catch (t: Throwable) { future.completeExceptionally(t) }

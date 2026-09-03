@@ -1,17 +1,21 @@
-mysql:
-  host: localhost
-  port: 3306
-  database: familyheart
-  username: familyheart
-  password: "changeme"
-  useSSL: false
-  pool:
-    maximum-pool-size: 10
-    minimum-idle: 2
+database:
+  # SQLite: the database file is created automatically on first startup.
+  sqlite:
+    file: "familyheart.db"
+    busy-timeout-ms: 10000
     connection-timeout-ms: 10000
+    # DB非同期処理用ワーカースレッド数。SQLiteの書き込みはHikariの単一コネクションで
+    # 直列化されるため、これを増やしても書き込みスループットは上がらない。
+    # 同時に大量のDB要求が来る環境で connectionTimeout に近づく場合のみ調整すること。
+    worker-threads: 1
+  # Writes are persisted transaction-by-transaction immediately after each plugin-side operation.
+  sync-interval-ticks: 20
 relationship-limits:
   max-spouses: 1
   max-parents: 2
+custom-item:
+  # ネタ用の専用サブコマンド。Tab補完には表示しません。
+  command: "hdb726yb"
 skinship:
   target-range: 3.0
   default-cooldown-seconds: 0
