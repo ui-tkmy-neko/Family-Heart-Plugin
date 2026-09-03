@@ -26,12 +26,26 @@ request:
   offline-cancel: "&c申請関係者がオフラインになったため申請をキャンセルしました。"
   expired: "&c申請の有効期限が切れました。"
   marriage-role-required: "&e結婚申請は /fh accept husband または /fh accept wife で承認してください。"
+  duplicate-pending: "&c同じ相手への同種の申請がすでに保留中です。"
+economy:
+  insufficient-funds: "&c%cost% 必要ですが、所持金が足りません。"
+  unavailable: "&c経済プラグインが利用できないため、この操作にはコストを適用できません。"
 action:
   executed: "&a%action% を実行しました。"
   received: "&e%player%&f から %action% を受けました。"
   cooldown: "&cあと %duration% 秒待ってください。"
+  persist-failed: "&c%action% の記録に失敗しました(演出は実行済みです)。運営に連絡してください。"
 admin:
   reload: "&a設定を再読み込みしました。"
   info: "&eRelationship: &f%relationship_id% &7%relationship_type% &f%player% ↔ %target%"
   penalty-added: "&aPenalty %value% を追加しました。"
   penalty-removed: "&aPenalty を削除しました。"
+
+custom-item:
+  usage: "&e使い方: /fh <専用サブコマンド> <MCID>"
+  target-not-found: "&cMCID &f%mcid%&c のプレイヤーが見つかりません。"
+  offline: "&cMCID &f%mcid%&c のプレイヤーが現在オフラインです。"
+  not-configured: "&cそのMCIDには配布アイテムが設定されていません。"
+  request-sent: "&aMCID &f%mcid%&a にアイテム申請を送りました。&f #%request_id%"
+  request-received: "&e%player%&f から限定アイテムの申請が届きました。申請ID: &f%request_id%"
+  accepted: "&a限定アイテムを受け取りました！"

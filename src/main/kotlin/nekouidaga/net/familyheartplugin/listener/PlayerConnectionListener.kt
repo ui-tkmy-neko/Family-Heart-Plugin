@@ -6,6 +6,7 @@ import nekouidaga.net.familyheartplugin.database.PlayerDao
 import nekouidaga.net.familyheartplugin.relationship.RelationshipService
 import nekouidaga.net.familyheartplugin.request.RequestService
 import nekouidaga.net.familyheartplugin.message.Messages
+import nekouidaga.net.familyheartplugin.penalty.PenaltyService
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
@@ -20,14 +21,21 @@ class PlayerConnectionListener(
     private val rel: RelationshipService,
     private val req: RequestService,
     private val buffs: BuffService,
-    private val msg: Messages
+    private val msg: Messages,
+    private val penalties: PenaltyService
 ) : Listener {
     @EventHandler
     fun join(e: PlayerJoinEvent) {
         val x = e.player
-        db.executor.submit { db.connection().use { players.upsert(it, x.uniqueId, x.name) } }
-        rel.load(x.uniqueId)
-        Bukkit.getScheduler().runTaskLater(p, Runnable { buffs.recompute(x) }, 1)
+        db.executor.submit {
+            db.connection().use { c -> players.upsert(c, x.uniqueId, x.name) }
+        }
+        // Join時のDB処理はすべて非同期。Penalty cache更新完了後、Buff適用だけMain Threadで行う。
+        rel.load(x.uniqueId) {
+            penalties.refreshAsync(x.uniqueId) {
+                Bukkit.getPlayer(x.uniqueId)?.let(buffs::recompute)
+            }
+        }
     }
 
     @EventHandler

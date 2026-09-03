@@ -1,4 +1,5 @@
 package nekouidaga.net.familyheartplugin.database
+
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.bukkit.configuration.file.FileConfiguration
@@ -6,9 +7,250 @@ import java.sql.Connection
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.logging.Logger
-class DatabaseManager(private val log:Logger){private lateinit var ds:HikariDataSource;val executor:ExecutorService=Executors.newFixedThreadPool(8){Thread(it,"FamilyHeart-DB").apply{isDaemon=true}}
-fun connect(c:FileConfiguration){ds=HikariDataSource(HikariConfig().apply{jdbcUrl="jdbc:mysql://${c.getString("mysql.host","localhost")}:${c.getInt("mysql.port",3306)}/${c.getString("mysql.database","familyheart")}?useSSL=${c.getBoolean("mysql.useSSL",false)}&useUnicode=true&characterEncoding=utf8&serverTimezone=UTC";username=c.getString("mysql.username","familyheart");password=c.getString("mysql.password","");maximumPoolSize=c.getInt("mysql.pool.maximum-pool-size",10);minimumIdle=c.getInt("mysql.pool.minimum-idle",2);connectionTimeout=c.getLong("mysql.pool.connection-timeout-ms",10000);poolName="FamilyHeart-Pool"});initSchema()}
-fun connection():Connection=ds.connection
-private fun initSchema(){listOf("CREATE TABLE IF NOT EXISTS players(uuid VARCHAR(36) PRIMARY KEY,mcid VARCHAR(32) NOT NULL,first_seen TIMESTAMP NOT NULL,last_seen TIMESTAMP NOT NULL,INDEX idx_mcid(mcid)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","CREATE TABLE IF NOT EXISTS relationship_sequence(id BIGINT NOT NULL PRIMARY KEY) ENGINE=InnoDB","CREATE TABLE IF NOT EXISTS relationships(internal_id BIGINT AUTO_INCREMENT PRIMARY KEY,relationship_id VARCHAR(32) UNIQUE NOT NULL,player_a VARCHAR(36) NOT NULL,player_b VARCHAR(36) NOT NULL,type VARCHAR(32) NOT NULL,role_a VARCHAR(32) NOT NULL,role_b VARCHAR(32) NOT NULL,auto_added BOOLEAN NOT NULL DEFAULT FALSE,status VARCHAR(16) NOT NULL,created_at TIMESTAMP NOT NULL,updated_at TIMESTAMP NOT NULL,INDEX idx_a(player_a,status),INDEX idx_b(player_b,status)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","CREATE TABLE IF NOT EXISTS relationship_history(id BIGINT AUTO_INCREMENT PRIMARY KEY,relationship_id VARCHAR(32) NOT NULL,action VARCHAR(64) NOT NULL,actor VARCHAR(36),target VARCHAR(36),reason TEXT,created_at TIMESTAMP NOT NULL,INDEX idx_hist(relationship_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","CREATE TABLE IF NOT EXISTS requests(id BIGINT AUTO_INCREMENT PRIMARY KEY,requester VARCHAR(36) NOT NULL,target VARCHAR(36) NOT NULL,type VARCHAR(32) NOT NULL,metadata TEXT,status VARCHAR(16) NOT NULL,created_at TIMESTAMP NOT NULL,updated_at TIMESTAMP NOT NULL,INDEX idx_req_target(target,status)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","CREATE TABLE IF NOT EXISTS actions(id BIGINT AUTO_INCREMENT PRIMARY KEY,actor VARCHAR(36) NOT NULL,target VARCHAR(36) NOT NULL,action VARCHAR(32) NOT NULL,created_at TIMESTAMP NOT NULL,INDEX idx_actions(actor,created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","CREATE TABLE IF NOT EXISTS family_penalties(id BIGINT AUTO_INCREMENT PRIMARY KEY,target_type VARCHAR(16) NOT NULL,target_player VARCHAR(36),target_relationship VARCHAR(32),effect VARCHAR(64) NOT NULL,value DOUBLE NOT NULL,multiplier DOUBLE NOT NULL DEFAULT 1,started_at TIMESTAMP NOT NULL,ends_at TIMESTAMP NULL,removable BOOLEAN NOT NULL DEFAULT TRUE,active BOOLEAN NOT NULL DEFAULT TRUE,INDEX idx_pen_player(target_player,active)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","CREATE TABLE IF NOT EXISTS audit_log(id BIGINT AUTO_INCREMENT PRIMARY KEY,actor VARCHAR(36),action VARCHAR(64) NOT NULL,target_player VARCHAR(36),relationship_id VARCHAR(32),result VARCHAR(16) NOT NULL,reason TEXT,created_at TIMESTAMP NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4").forEach { sql -> connection().use { conn -> conn.createStatement().use { st -> st.executeUpdate(sql) } } }}
-fun shutdown(){if(::ds.isInitialized)ds.close();executor.shutdownNow()}}
-inline fun <T> Connection.tx(block:(Connection)->T):T{val ac=autoCommit;autoCommit=false;return try{val v=block(this);commit();v}catch(e:Exception){rollback();throw e}finally{autoCommit=ac}}
+
+/**
+ * SQLite-backed persistence for FamilyHeart.
+ *
+ * SQLite is intentionally used with a single Hikari connection. SQLite supports
+ * concurrent readers, but only one writer at a time; serialising JDBC work here
+ * avoids lock storms while all plugin-side writes remain asynchronous.
+ */
+class DatabaseManager(private val log: Logger) {
+    private lateinit var ds: HikariDataSource
+    // SQLiteはHikariの単一コネクション(maximumPoolSize=1)で書き込みを直列化している。
+    // ワーカースレッド数を無条件に8とすると、その全てが同時にDB処理を要求した場合、
+    // 単一コネクションの取得待ちで connectionTimeout に近づくレイテンシが発生し得る
+    // (機能上のバグではないが、負荷が高い環境向けに調整可能にしておく)。
+    private lateinit var executorImpl: ExecutorService
+    val executor: ExecutorService get() = executorImpl
+
+    fun connect(c: FileConfiguration) {
+        val file = c.getString("database.sqlite.file", "familyheart.db") ?: "familyheart.db"
+        val busyTimeout = c.getLong("database.sqlite.busy-timeout-ms", 10_000L)
+        val maximumPool = 1
+        val workerThreads = c.getInt("database.sqlite.worker-threads", 4).coerceIn(1, 8)
+        executorImpl = Executors.newFixedThreadPool(workerThreads) {
+            Thread(it, "FamilyHeart-DB").apply { isDaemon = true }
+        }
+
+        ds = HikariDataSource(HikariConfig().apply {
+            jdbcUrl = "jdbc:sqlite:$file"
+            maximumPoolSize = maximumPool
+            minimumIdle = 1
+            connectionTimeout = c.getLong("database.sqlite.connection-timeout-ms", 10_000L)
+            poolName = "FamilyHeart-SQLite-Pool"
+            connectionInitSql = "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=$busyTimeout;"
+        })
+
+        initSchema()
+        migrateSQLiteColumns()
+        log.info("[FamilyHeart] SQLite database ready: $file")
+    }
+
+    fun connection(): Connection = ds.connection
+
+    private fun migrateSQLiteColumns() {
+        connection().use { conn ->
+            ensureColumn(conn, "relationships", "auto_source_relationship_id", "VARCHAR(32)")
+            ensureColumn(conn, "requests", "pending_key", "VARCHAR(160)")
+            ensureColumn(conn, "requests", "processing_guard", "VARCHAR(32)")
+            ensureColumn(conn, "actions", "state", "VARCHAR(16) NOT NULL DEFAULT 'EXECUTED'")
+            ensureColumn(conn, "actions", "request_id", "INTEGER")
+
+            // Existing SQLite databases are expected to have been created by this
+            // plugin, so these indexes are safe to create idempotently.
+            conn.createStatement().use { st ->
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_auto_source ON relationships(auto_source_relationship_id)")
+                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_request ON requests(pending_key)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_req_expire ON requests(status,created_at)")
+                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_actions_request ON actions(request_id)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_actions_state ON actions(state)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_pen_expire ON family_penalties(active,ends_at)")
+            }
+        }
+    }
+
+    private fun ensureColumn(conn: Connection, table: String, column: String, definition: String) {
+        val exists = conn.prepareStatement("PRAGMA table_info($table)").use { ps ->
+            ps.executeQuery().use { rs ->
+                var found = false
+                while (rs.next()) {
+                    if (rs.getString("name").equals(column, ignoreCase = true)) {
+                        found = true
+                        break
+                    }
+                }
+                found
+            }
+        }
+        if (!exists) conn.createStatement().use { it.executeUpdate("ALTER TABLE $table ADD COLUMN $column $definition") }
+    }
+
+    private fun initSchema() {
+        val statements = listOf(
+            """CREATE TABLE IF NOT EXISTS players(
+                uuid VARCHAR(36) PRIMARY KEY,
+                mcid VARCHAR(32) NOT NULL,
+                first_seen TIMESTAMP NOT NULL,
+                last_seen TIMESTAMP NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS relationship_sequence(
+                id INTEGER PRIMARY KEY,
+                next_value BIGINT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS relationships(
+                internal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                relationship_id VARCHAR(32) UNIQUE NOT NULL,
+                player_a VARCHAR(36) NOT NULL,
+                player_b VARCHAR(36) NOT NULL,
+                type VARCHAR(32) NOT NULL,
+                role_a VARCHAR(32) NOT NULL,
+                role_b VARCHAR(32) NOT NULL,
+                auto_added BOOLEAN NOT NULL DEFAULT FALSE,
+                auto_source_relationship_id VARCHAR(32),
+                status VARCHAR(16) NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS relationship_history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                relationship_id VARCHAR(32) NOT NULL,
+                action VARCHAR(64) NOT NULL,
+                actor VARCHAR(36),
+                target VARCHAR(36),
+                reason TEXT,
+                created_at TIMESTAMP NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS requests(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester VARCHAR(36) NOT NULL,
+                target VARCHAR(36) NOT NULL,
+                type VARCHAR(32) NOT NULL,
+                metadata TEXT,
+                status VARCHAR(16) NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                pending_key VARCHAR(160),
+                processing_guard VARCHAR(32)
+            )""",
+            """CREATE TABLE IF NOT EXISTS actions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor VARCHAR(36) NOT NULL,
+                target VARCHAR(36) NOT NULL,
+                action VARCHAR(32) NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                state VARCHAR(16) NOT NULL DEFAULT 'EXECUTED',
+                request_id INTEGER
+            )""",
+            """CREATE TABLE IF NOT EXISTS family_penalties(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_type VARCHAR(16) NOT NULL,
+                target_player VARCHAR(36),
+                target_relationship VARCHAR(32),
+                effect VARCHAR(64) NOT NULL,
+                value DOUBLE NOT NULL,
+                multiplier DOUBLE NOT NULL DEFAULT 1,
+                started_at TIMESTAMP NOT NULL,
+                ends_at TIMESTAMP,
+                removable BOOLEAN NOT NULL DEFAULT TRUE,
+                active BOOLEAN NOT NULL DEFAULT TRUE
+            )""",
+            """CREATE TABLE IF NOT EXISTS audit_log(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor VARCHAR(36),
+                action VARCHAR(64) NOT NULL,
+                target_player VARCHAR(36),
+                relationship_id VARCHAR(32),
+                result VARCHAR(16) NOT NULL,
+                reason TEXT,
+                created_at TIMESTAMP NOT NULL
+            )"""
+        )
+
+        connection().use { conn ->
+            conn.createStatement().use { st -> statements.forEach(st::executeUpdate) }
+            conn.createStatement().use { st ->
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_mcid ON players(mcid)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_a ON relationships(player_a,status)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_b ON relationships(player_b,status)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_auto_source ON relationships(auto_source_relationship_id)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_hist ON relationship_history(relationship_id)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_req_target ON requests(target,status)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_req_processing ON requests(status,processing_guard,updated_at)")
+                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_request ON requests(pending_key)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_actions ON actions(actor,created_at)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_actions_state ON actions(state)")
+                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_actions_request ON actions(request_id)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_pen_player ON family_penalties(target_player,active)")
+                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_pen_expire ON family_penalties(active,ends_at)")
+            }
+            conn.prepareStatement("INSERT OR IGNORE INTO relationship_sequence(id,next_value) VALUES(1,1)").use { it.executeUpdate() }
+        }
+    }
+
+    /** Recover durable request states after an abnormal shutdown. */
+    fun recoverProcessingBlocking() {
+        connection().use { c ->
+            c.tx {
+                c.createStatement().use { st ->
+                    st.executeUpdate("""
+                        UPDATE requests
+                        SET status='ACCEPTED', processing_guard=NULL, pending_key=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE status='PROCESSING' AND type='SKINSHIP'
+                          AND processing_guard IN ('SKINSHIP_INTENT','SKINSHIP_EXECUTED')
+                          AND id IN (SELECT request_id FROM actions WHERE state='EXECUTED' AND request_id IS NOT NULL)
+                    """.trimIndent())
+
+                    st.executeUpdate("""
+                        UPDATE requests
+                        SET status='CANCELLED', processing_guard=NULL, pending_key=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE status='PROCESSING' AND type='SKINSHIP'
+                          AND processing_guard IN ('SKINSHIP_INTENT','SKINSHIP_EXECUTED')
+                          AND updated_at < datetime('now','-2 minutes')
+                          AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.request_id=requests.id AND a.state='EXECUTED')
+                    """.trimIndent())
+
+                    st.executeUpdate("""
+                        UPDATE requests
+                        SET status='ACCEPTED', processing_guard=NULL, pending_key=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE status='PROCESSING' AND type='CUSTOM_ITEM' AND processing_guard='CUSTOM_ITEM_GIVEN'
+                    """.trimIndent())
+
+                    st.executeUpdate("""
+                        UPDATE requests
+                        SET status='CANCELLED', processing_guard=NULL, pending_key=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE status='PROCESSING' AND type='CUSTOM_ITEM' AND processing_guard='CUSTOM_ITEM_INTENT'
+                          AND updated_at < datetime('now','-2 minutes')
+                    """.trimIndent())
+
+                    st.executeUpdate("""
+                        UPDATE requests
+                        SET status='PENDING', updated_at=CURRENT_TIMESTAMP
+                        WHERE status='PROCESSING' AND processing_guard IS NULL
+                          AND updated_at < datetime('now','-2 minutes')
+                    """.trimIndent())
+                }
+            }
+        }
+    }
+
+    fun shutdown() {
+        if (::ds.isInitialized) ds.close()
+        if (::executorImpl.isInitialized) executorImpl.shutdownNow()
+    }
+}
+
+inline fun <T> Connection.tx(block: (Connection) -> T): T {
+    val ac = autoCommit
+    autoCommit = false
+    return try {
+        val value = block(this)
+        commit()
+        value
+    } catch (e: Exception) {
+        rollback()
+        throw e
+    } finally {
+        autoCommit = ac
+    }
+}

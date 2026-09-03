@@ -11,3 +11,9 @@ enum class RelationshipError {
 }
 
 class RelationshipException(val error: RelationshipError) : Exception(error.name)
+
+enum class RequestError {
+    DUPLICATE_PENDING
+}
+
+class RequestException(val error: RequestError) : Exception(error.name)

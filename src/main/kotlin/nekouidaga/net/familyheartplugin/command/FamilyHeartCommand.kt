@@ -52,8 +52,19 @@ class FamilyHeartCommand(
                     send(target, "request.received", mapOf("player" to pl.name, "request_id" to id.toString()))
                 })
             }
-            .exceptionally {
-                Bukkit.getScheduler().runTask(p, Runnable { send(pl, "general.database-error") })
+            .exceptionally { ex ->
+                Bukkit.getScheduler().runTask(p, Runnable {
+                    // バグ修正(7): 以前は重複申請チェックが無く、常にdatabase-errorとして
+                    // 一括りにしていた。RequestException(DUPLICATE_PENDING)は専用メッセージにする。
+                    val cause = ex.cause ?: ex
+                    if (cause is nekouidaga.net.familyheartplugin.service.RequestException &&
+                        cause.error == nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
+                    ) {
+                        send(pl, "request.duplicate-pending")
+                    } else {
+                        send(pl, "general.database-error")
+                    }
+                })
                 null
             }
     }
@@ -69,6 +80,50 @@ class FamilyHeartCommand(
         }
         if (args.isEmpty() || args[0].equals("gui", true)) {
             gui.openMain(s)
+            return true
+        }
+
+        if (args[0].equals(settings.customItemCommand(), ignoreCase = false)) {
+            if (args.size != 2) {
+                send(s, "custom-item.usage")
+                return true
+            }
+            val mcid = args[1]
+            if (settings.customItem(mcid) == null) {
+                send(s, "custom-item.not-configured")
+                return true
+            }
+            req.findMcid(mcid).thenAccept { targetUuid ->
+                Bukkit.getScheduler().runTask(p, Runnable {
+                    if (targetUuid == null) {
+                        send(s, "custom-item.target-not-found", mapOf("mcid" to mcid))
+                        return@Runnable
+                    }
+                    val target = Bukkit.getPlayer(targetUuid)
+                    if (target == null) {
+                        send(s, "custom-item.offline", mapOf("mcid" to mcid))
+                        return@Runnable
+                    }
+                    req.createCustomItemRequest(s.uniqueId, target.uniqueId, mcid).thenAccept { id ->
+                        Bukkit.getScheduler().runTask(p, Runnable {
+                            send(s, "custom-item.request-sent", mapOf("mcid" to mcid, "request_id" to id.toString()))
+                            send(target, "custom-item.request-received", mapOf("player" to s.name, "request_id" to id.toString()))
+                        })
+                    }.exceptionally { ex ->
+                        Bukkit.getScheduler().runTask(p, Runnable {
+                            val cause = ex.cause ?: ex
+                            if (cause is nekouidaga.net.familyheartplugin.service.RequestException &&
+                                cause.error == nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING) {
+                                send(s, "request.duplicate-pending")
+                            } else send(s, "general.database-error")
+                        })
+                        null
+                    }
+                })
+            }.exceptionally {
+                Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                null
+            }
             return true
         }
 
@@ -94,11 +149,6 @@ class FamilyHeartCommand(
                 }
                 if (target == s) {
                     send(s, "relationship.self")
-                    return true
-                }
-                val cost = settings.cost("marriage")
-                if (settings.econEnabled() && (!economy.available() || !economy.canCharge(s, cost))) {
-                    send(s, "general.database-error")
                     return true
                 }
                 request(s, target, RequestType.MARRY, role.name)
@@ -137,8 +187,15 @@ class FamilyHeartCommand(
                                     }
                                 })
                             }
-                            .exceptionally {
-                                Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                            .exceptionally { ex ->
+                                Bukkit.getScheduler().runTask(p, Runnable {
+                                    val cause = ex.cause ?: ex
+                                    when (cause.message) {
+                                        "economy.insufficient" -> send(s, "economy.insufficient-funds", mapOf("cost" to settings.cost("marriage").toString()))
+                                        "economy.charge-failed" -> send(s, "economy.unavailable")
+                                        else -> send(s, "general.database-error")
+                                    }
+                                })
                                 null
                             }
                     })
@@ -148,6 +205,10 @@ class FamilyHeartCommand(
             "divorce" -> {
                 if (!ok(s, "familyheart.divorce")) {
                     send(s, "general.no-permission")
+                    return true
+                }
+                if (!rel.isLoaded(s.uniqueId)) {
+                    send(s, "general.database-error")
                     return true
                 }
                 val sp = rel.spouse(s.uniqueId)?.let(Bukkit::getPlayer) ?: run {
@@ -176,13 +237,23 @@ class FamilyHeartCommand(
                     send(s, "relationship.self")
                     return true
                 }
-                if (mode == "parent") request(s, target, RequestType.CHILD_PARENT)
-                else request(target, s, RequestType.CHILD_PARENT)
+                // バグ修正: 以前は mode=="child" のとき request(target, s, ...) と
+                // requester/targetを入れ替えていたため、DB上のtarget(承認者)が
+                // 実行者自身になり、相手の同意なしに自己承認できてしまっていた。
+                // 常に「実行者=requester、相手=target(承認者)」を保ち、
+                // 実行者が名乗った役割(PARENT/CHILD)はmetadataに保存して
+                // RequestService側で判定する(MARRYのSpouseRoleと同じ方式)。
+                val role = if (mode == "parent") ParentChildRole.PARENT else ParentChildRole.CHILD
+                request(s, target, RequestType.CHILD_PARENT, role.name)
             }
 
             "separation" -> {
                 if (!ok(s, "familyheart.separation")) {
                     send(s, "general.no-permission")
+                    return true
+                }
+                if (!rel.isLoaded(s.uniqueId)) {
+                    send(s, "general.database-error")
                     return true
                 }
                 val rs = rel.relationships(s.uniqueId).filter { it.type == RelationshipType.PARENT_CHILD }
@@ -229,7 +300,7 @@ class FamilyHeartCommand(
         }
         when (a.getOrNull(0)?.lowercase()) {
             "reload" -> {
-                p.reloadConfig(); msg.reload(); settings.reload(); send(s, "admin.reload")
+                p.reloadConfig(); msg.reload(); settings.reload(); gui.reload(); send(s, "admin.reload")
             }
             "relation" -> when (a.getOrNull(1)?.lowercase()) {
                 "info" -> if (ok(s, "familyheart.admin.relation.info")) a.getOrNull(2)?.let { id ->
@@ -250,25 +321,63 @@ class FamilyHeartCommand(
                 }
                 "reset" -> if (ok(s, "familyheart.admin.relation.reset")) {
                     val x = a.getOrNull(2); val y = a.getOrNull(3)
-                    if (x != null && y != null) rel.resetPair(Bukkit.getOfflinePlayer(x).uniqueId, Bukkit.getOfflinePlayer(y).uniqueId)
+                    if (x != null && y != null) {
+                        // バグ修正: Bukkit.getOfflinePlayer(String)はローカルにキャッシュがない名前だと
+                        // Mojang APIへのブロッキングHTTPリクエストを行うことがあり、コマンド実行スレッド
+                        // (メインスレッド)で直接呼ぶとサーバー全体が一時停止しうる。非同期タスクへ逃がす。
+                        Bukkit.getScheduler().runTaskAsynchronously(p, Runnable {
+                            val targetA = Bukkit.getOfflinePlayer(x).uniqueId
+                            val targetB = Bukkit.getOfflinePlayer(y).uniqueId
+                            // バグ修正: 以前は結果を誰にも通知せず、監査ログにも記録していなかった
+                            // (remove/addは記録している)。58章の監査要件に合わせて追加。
+                            rel.resetPair(targetA, targetB).thenAccept { count ->
+                                Bukkit.getScheduler().runTask(p, Runnable {
+                                    send(s, "relationship.removed", mapOf("relationship_id" to "$x <-> $y ($count)"))
+                                })
+                                audit.log(s.uniqueId, "RELATION_RESET", targetA, null, "SUCCESS", "target=$y count=$count")
+                            }
+                        })
+                    }
                 }
             }
             "family" -> if (a.getOrNull(1)?.equals("info", true) == true && ok(s, "familyheart.admin.family.info")) {
-                val u = a.getOrNull(2)?.let { Bukkit.getOfflinePlayer(it).uniqueId } ?: s.uniqueId
-                s.sendMessage("Family relationships: ${rel.relationships(u).size}")
+                fun report(u: java.util.UUID) {
+                    Bukkit.getScheduler().runTask(p, Runnable {
+                        if (!rel.isLoaded(u)) { send(s, "general.database-error"); return@Runnable }
+                        s.sendMessage("Family relationships: ${rel.relationships(u).size}")
+                    })
+                }
+                val name = a.getOrNull(2)
+                if (name == null) report(s.uniqueId)
+                // バグ修正: Bukkit.getOfflinePlayer(String)はメインスレッドで呼ぶと
+                // Mojang APIへのブロッキング問い合わせが発生しうるため非同期化する。
+                else Bukkit.getScheduler().runTaskAsynchronously(p, Runnable { report(Bukkit.getOfflinePlayer(name).uniqueId) })
             }
             "penalty" -> when (a.getOrNull(1)?.lowercase()) {
                 "add" -> if (ok(s, "familyheart.admin.penalty.add")) {
-                    val u = a.getOrNull(2)?.let { Bukkit.getOfflinePlayer(it).uniqueId } ?: s.uniqueId
                     val effect = a.getOrNull(3) ?: "SPEED"
                     val mult = a.getOrNull(4)?.toDoubleOrNull() ?: 1.0
-                    penalty.add(PenaltyTargetType.PLAYER, u, null, effect, 0.0, mult, null, true).thenAccept { id ->
-                        send(s, "admin.penalty-added", mapOf("value" to id.toString()))
-                        audit.log(s.uniqueId, "PENALTY_ADD", u, null, "SUCCESS", null)
+                    fun proceed(u: java.util.UUID) {
+                        penalty.add(PenaltyTargetType.PLAYER, u, null, effect, 0.0, mult, null, true).thenAccept { id ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                send(s, "admin.penalty-added", mapOf("value" to id.toString()))
+                            })
+                            audit.log(s.uniqueId, "PENALTY_ADD", u, null, "SUCCESS", null)
+                        }.exceptionally {
+                            Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                            null
+                        }
                     }
+                    val name = a.getOrNull(2)
+                    if (name == null) proceed(s.uniqueId)
+                    // バグ修正: Bukkit.getOfflinePlayer(String)はメインスレッドで呼ぶと
+                    // Mojang APIへのブロッキング問い合わせが発生しうるため非同期化する。
+                    else Bukkit.getScheduler().runTaskAsynchronously(p, Runnable { proceed(Bukkit.getOfflinePlayer(name).uniqueId) })
                 }
                 "remove" -> if (ok(s, "familyheart.admin.penalty.remove")) a.getOrNull(2)?.toLongOrNull()?.let { id ->
-                    penalty.remove(id).thenRun { send(s, "admin.penalty-removed") }
+                    penalty.remove(id).thenRun {
+                        Bukkit.getScheduler().runTask(p, Runnable { send(s, "admin.penalty-removed") })
+                    }
                 }
             }
         }

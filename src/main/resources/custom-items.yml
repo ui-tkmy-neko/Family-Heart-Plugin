@@ -1,0 +1,23 @@
+# MCIDごとに配布するネタ用カスタムアイテム。
+# /fh <専用サブコマンド> <MCID> で対象へ申請できます。
+items:
+  ExampleMCID:
+    material: NETHER_STAR
+    amount: 1
+    name: "&bExampleMCID 専用アイテム"
+    lore:
+      - "&7FamilyHeart ネタアイテム"
+    # Paper 26.2 / Minecraft 26.2 のCustomModelData。
+    # リソースパック側でこの値をテクスチャ識別に利用できます。
+    custom-model-data: 726
+    enchantments:
+      LUCK: 1
+    # 承認時に対象プレイヤーへ付与するPotionEffect。
+    # duration-ticksを使わない場合はduration-secondsでも指定可能です。
+    effects:
+      SPEED:
+        duration-seconds: 30
+        amplifier: 1
+        ambient: false
+        particles: true
+        icon: true
