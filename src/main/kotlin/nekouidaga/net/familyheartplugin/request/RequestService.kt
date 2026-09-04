@@ -69,17 +69,6 @@ class RequestService(
         db.connection().use { c -> players.byMcid(c, mcid) }
     }, db.executor)
 
-    fun mcid(uuid: UUID): CompletableFuture<String?> {
-        mcids[uuid]?.let { return CompletableFuture.completedFuture(it) }
-        Bukkit.getPlayer(uuid)?.name?.let { name ->
-            val value = canonicalMcid(name)
-            mcids[uuid] = value
-            return CompletableFuture.completedFuture(value)
-        }
-        return CompletableFuture.supplyAsync({ db.connection().use { c -> players.mcidByUuid(c, uuid) } }, db.executor)
-            .thenApply { value -> value?.also { mcids[uuid] = it } }
-    }
-
     fun pending(u: UUID): CompletableFuture<List<RelationshipRequest>> = CompletableFuture.completedFuture(
         synchronized(lock) { requests.values.filter { it.target == u && it.status == RequestStatus.PENDING }.sortedByDescending { it.id } }
     )

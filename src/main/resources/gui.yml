@@ -1,14 +1,3 @@
-decoration:
-  main-frame: "CYAN_STAINED_GLASS_PANE"
-  family-frame: "BLUE_STAINED_GLASS_PANE"
-  skinship-frame: "PINK_STAINED_GLASS_PANE"
-  requests-frame: "YELLOW_STAINED_GLASS_PANE"
-  info-frame: "LIGHT_BLUE_STAINED_GLASS_PANE"
-  children-frame: "GREEN_STAINED_GLASS_PANE"
-  settings-frame: "GRAY_STAINED_GLASS_PANE"
-buttons:
-  back: "&c戻る"
-
 main:
   title: "FamilyHeart"
   size: 27
@@ -19,8 +8,8 @@ main:
     skinship: { slot: 13, material: PINK_DYE, name: "&dスキンシップ", lore: ["&7hug / kiss / feed"] }
     requests: { slot: 14, material: PAPER, name: "&e申請", lore: ["&7申請一覧"] }
     relationship: { slot: 15, material: BOOK, name: "&bRelationship情報", lore: ["&7Relationship一覧"] }
-    info: { slot: 16, material: NETHER_STAR, name: "&bInfo", lore: ["&7配偶者・子供・結婚歴"] }
-    settings: { slot: 17, material: COMPARATOR, name: "&7設定", lore: ["&7現在の設定を確認"] }
+    settings: { slot: 16, material: COMPARATOR, name: "&7設定", lore: ["&7現在の設定を確認"] }
+  buttons: { back: "&c戻る", confirm: "&a確認", cancel: "&cキャンセル" }
 family:
   title: "家族"
 spouse:
@@ -33,9 +22,6 @@ requests:
   title: "申請"
 skinship:
   title: "スキンシップ"
-info:
-  title: "FamilyHeart情報"
-  children-title: "子供一覧"
 settings:
   title: "設定"
 empty: "&7表示できる項目はありません。"

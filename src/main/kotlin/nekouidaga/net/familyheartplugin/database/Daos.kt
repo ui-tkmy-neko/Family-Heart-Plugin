@@ -17,9 +17,6 @@ class PlayerDao {
     fun byMcid(c: Connection, n: String): UUID? = c.prepareStatement("SELECT uuid FROM players WHERE lower(mcid)=lower(?) ORDER BY last_seen DESC LIMIT 1").use {
         it.setString(1, n.trim()); it.executeQuery().use { r -> if (r.next()) UUID.fromString(r.getString(1)) else null }
     }
-    fun mcidByUuid(c: Connection, u: UUID): String? = c.prepareStatement("SELECT mcid FROM players WHERE uuid=? LIMIT 1").use {
-        it.setString(1, u.toString()); it.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
-    }
 }
 
 class RelationshipDao {

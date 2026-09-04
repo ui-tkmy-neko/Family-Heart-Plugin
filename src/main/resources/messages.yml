@@ -4,6 +4,7 @@ general:
   no-permission: "&c権限がありません。"
   invalid-input: "&c入力が正しくありません。"
   database-error: "&cデータベース処理でエラーが発生しました。"
+  message-unavailable: "&cメッセージを表示できませんでした。"
   relationship-loading: "&e関係情報を読み込んでいます。読み込み完了後に申請を処理します。"
   relationship-loading-timeout: "&c関係情報の読み込みが完了しませんでした。少し待ってからもう一度お試しください。"
   target-not-found: "&c対象プレイヤーが見つかりません。"
@@ -32,69 +33,66 @@ request:
   not-found: "&c受理できる保留中の申請が見つかりません。"
   marry:
     sent:
-      wife: "&d%target%&f に、妻役として結婚したいと申請しました。&7 #%request_id%"
-      husband: "&d%target%&f に、夫役として結婚したいと申請しました。&7 #%request_id%"
+      wife: "&a%player%&f に、あなたに妻になってほしいという結婚申請を送りました。&7 (#%request_id%)"
+      husband: "&a%player%&f に、あなたに夫になってほしいという結婚申請を送りました。&7 (#%request_id%)"
     received:
-      wife: "&d%player%&f が、妻役として結婚したいと言っています。&7 #%request_id%"
-      husband: "&d%player%&f が、夫役として結婚したいと言っています。&7 #%request_id%"
+      wife: "&e%player%&f があなたに妻になってほしいと結婚を申し込みました。&7 (#%request_id%)"
+      husband: "&e%player%&f があなたに夫になってほしいと結婚を申し込みました。&7 (#%request_id%)"
     accepted:
-      wife: "&a%player%&f の結婚申請を妻役で承認しました。&7 #%request_id%"
-      husband: "&a%player%&f の結婚申請を夫役で承認しました。&7 #%request_id%"
+      wife: "&a%player%&f との結婚申請を承認しました。あなたの役割は妻です。&7 (#%request_id%)"
+      husband: "&a%player%&f との結婚申請を承認しました。あなたの役割は夫です。&7 (#%request_id%)"
+    accept-notify:
+      wife: "&a%player%&f が結婚申請を承認しました。あなたの役割は妻です。&7 (#%request_id%)"
+      husband: "&a%player%&f が結婚申請を承認しました。あなたの役割は夫です。&7 (#%request_id%)"
     denied:
-      wife: "&c%player%&f の妻役としての結婚申請を拒否しました。&7 #%request_id%"
-      husband: "&c%player%&f の夫役としての結婚申請を拒否しました。&7 #%request_id%"
+      wife: "&c%player%&f への結婚申請（妻役）を拒否しました。&7 (#%request_id%)"
+      husband: "&c%player%&f への結婚申請（夫役）を拒否しました。&7 (#%request_id%)"
+    deny-notify:
+      wife: "&c%player%&f が結婚申請（妻役）を拒否しました。&7 (#%request_id%)"
+      husband: "&c%player%&f が結婚申請（夫役）を拒否しました。&7 (#%request_id%)"
   child:
-    sent:
-      parent: "&a%target%&f に親になってほしいと申請しました。&7 #%request_id%"
-      child: "&a%target%&f に子として認めてもらう申請をしました。&7 #%request_id%"
-    received:
-      parent: "&a%player%&f から、あなたに親になってほしいという申請が届きました。&7 #%request_id%"
-      child: "&a%player%&f から、あなたに子として認めてほしいという申請が届きました。&7 #%request_id%"
-    accepted:
-      parent: "&a%player%&f の親子関係申請を承認しました。&7 #%request_id%"
-      child: "&a%player%&f の親子関係申請を承認しました。&7 #%request_id%"
-    denied:
-      parent: "&c%player%&f の親子関係申請を拒否しました。&7 #%request_id%"
-      child: "&c%player%&f の親子関係申請を拒否しました。&7 #%request_id%"
-  skinship:
-    hug:
-      sent: "&d%target%&f にハグを申請しました。&7 #%request_id%"
-      received: "&d%player%&f からハグの申請が届きました。&7 #%request_id%"
-      accepted: "&a%player%&f のハグを受けました。&7 #%request_id%"
-      denied: "&c%player%&f のハグ申請を拒否しました。&7 #%request_id%"
-    kiss:
-      sent: "&d%target%&f にキスを申請しました。&7 #%request_id%"
-      received: "&d%player%&f からキスの申請が届きました。&7 #%request_id%"
-      accepted: "&a%player%&f のキスを受けました。&7 #%request_id%"
-      denied: "&c%player%&f のキス申請を拒否しました。&7 #%request_id%"
-    feed:
-      sent: "&d%target%&f に食事を申請しました。&7 #%request_id%"
-      received: "&d%player%&f から食事の申請が届きました。&7 #%request_id%"
-      accepted: "&a%player%&f の食事申請を承認しました。&7 #%request_id%"
-      denied: "&c%player%&f の食事申請を拒否しました。&7 #%request_id%"
+    sent: "&a%player%&f に親子関係の申請を送りました。&7 (#%request_id%)"
+    received: "&e%player%&f から親子関係の申請が届きました。&7 (#%request_id%)"
+    accepted: "&a%player%&f との親子関係申請を承認しました。&7 (#%request_id%)"
+    accept-notify: "&a%player%&f が親子関係申請を承認しました。&7 (#%request_id%)"
+    denied: "&c%player%&f への親子関係申請を拒否しました。&7 (#%request_id%)"
+    deny-notify: "&c%player%&f が親子関係申請を拒否しました。&7 (#%request_id%)"
   divorce:
-    sent: "&e%target%&f に離婚申請を送りました。&7 #%request_id%"
-    received: "&e%player%&f から離婚申請が届きました。&7 #%request_id%"
-    accepted: "&a%player%&f の離婚申請を承認しました。&7 #%request_id%"
-    denied: "&c%player%&f の離婚申請を拒否しました。&7 #%request_id%"
+    sent: "&a%player%&f に離婚申請を送りました。&7 (#%request_id%)"
+    received: "&e%player%&f から離婚申請が届きました。&7 (#%request_id%)"
+    accepted: "&a%player%&f との離婚申請を承認しました。&7 (#%request_id%)"
+    accept-notify: "&a%player%&f が離婚申請を承認しました。&7 (#%request_id%)"
+    denied: "&c%player%&f への離婚申請を拒否しました。&7 (#%request_id%)"
+    deny-notify: "&c%player%&f が離婚申請を拒否しました。&7 (#%request_id%)"
   separation:
-    sent: "&e%target%&f に親子関係の解除を申請しました。&7 #%request_id%"
-    received: "&e%player%&f から親子関係の解除申請が届きました。&7 #%request_id%"
-    accepted: "&a%player%&f の親子関係解除申請を承認しました。&7 #%request_id%"
-    denied: "&c%player%&f の親子関係解除申請を拒否しました。&7 #%request_id%"
-info:
-  title: "&bFamilyHeart情報"
-  summary: "&7FamilyHeart情報"
-  no-spouse: "&7配偶者: &fなし"
-  spouse: "&6配偶者: &f%mcid%"
-  spouse-role: "&7役割: &f%role%"
-  marriage-days: "&7結婚歴: &f%days%日"
-  no-children: "&7子供: &f0人"
-  children: "&a子供: &f%count%人"
-  children-list: "&a子供一覧"
-  child-entry: "&f%mcid%"
-  child-click: "&eクリックで詳細"
-  back: "&c戻る"
+    sent: "&a%player%&f に関係解消申請を送りました。&7 (#%request_id%)"
+    received: "&e%player%&f から関係解消申請が届きました。&7 (#%request_id%)"
+    accepted: "&a%player%&f との関係解消申請を承認しました。&7 (#%request_id%)"
+    accept-notify: "&a%player%&f が関係解消申請を承認しました。&7 (#%request_id%)"
+    denied: "&c%player%&f への関係解消申請を拒否しました。&7 (#%request_id%)"
+    deny-notify: "&c%player%&f が関係解消申請を拒否しました。&7 (#%request_id%)"
+  hug:
+    sent: "&d%player%&f にハグの申請を送りました。&7 (#%request_id%)"
+    received: "&e%player%&f からハグの申請が届きました。&7 (#%request_id%)"
+    accepted: "&a%player%&f からのハグ申請を承認しました。&7 (#%request_id%)"
+    accept-notify: "&a%player%&f がハグ申請を承認しました。&7 (#%request_id%)"
+    denied: "&c%player%&f へのハグ申請を拒否しました。&7 (#%request_id%)"
+    deny-notify: "&c%player%&f がハグ申請を拒否しました。&7 (#%request_id%)"
+  kiss:
+    sent: "&d%player%&f にキスの申請を送りました。&7 (#%request_id%)"
+    received: "&e%player%&f からキスの申請が届きました。&7 (#%request_id%)"
+    accepted: "&a%player%&f からのキス申請を承認しました。&7 (#%request_id%)"
+    accept-notify: "&a%player%&f がキス申請を承認しました。&7 (#%request_id%)"
+    denied: "&c%player%&f へのキス申請を拒否しました。&7 (#%request_id%)"
+    deny-notify: "&c%player%&f がキス申請を拒否しました。&7 (#%request_id%)"
+  feed:
+    sent: "&d%player%&f に食事の申請を送りました。&7 (#%request_id%)"
+    received: "&e%player%&f から食事の申請が届きました。&7 (#%request_id%)"
+    accepted: "&a%player%&f からの食事申請を承認しました。&7 (#%request_id%)"
+    accept-notify: "&a%player%&f が食事申請を承認しました。&7 (#%request_id%)"
+    denied: "&c%player%&f への食事申請を拒否しました。&7 (#%request_id%)"
+    deny-notify: "&c%player%&f が食事申請を拒否しました。&7 (#%request_id%)"
+
 economy:
   insufficient-funds: "&c%cost% 必要ですが、所持金が足りません。"
   unavailable: "&c経済プラグインが利用できないため、この操作にはコストを適用できません。"

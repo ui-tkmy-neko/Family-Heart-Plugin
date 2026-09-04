@@ -19,7 +19,6 @@ commands:
 permissions:
   familyheart.use: { default: true }
   familyheart.family: { default: true }
-  familyheart.info: { default: true }
   familyheart.marry: { default: true }
   familyheart.divorce: { default: true }
   familyheart.child: { default: true }
