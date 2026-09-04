@@ -213,18 +213,11 @@ class DatabaseManager(private val log: Logger) {
                           AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.request_id=requests.id AND a.state='EXECUTED')
                     """.trimIndent())
 
-                    st.executeUpdate("""
-                        UPDATE requests
-                        SET status='ACCEPTED', processing_guard=NULL, pending_key=NULL, updated_at=CURRENT_TIMESTAMP
-                        WHERE status='PROCESSING' AND type='CUSTOM_ITEM' AND processing_guard='CUSTOM_ITEM_GIVEN'
-                    """.trimIndent())
-
-                    st.executeUpdate("""
-                        UPDATE requests
-                        SET status='CANCELLED', processing_guard=NULL, pending_key=NULL, updated_at=CURRENT_TIMESTAMP
-                        WHERE status='PROCESSING' AND type='CUSTOM_ITEM' AND processing_guard='CUSTOM_ITEM_INTENT'
-                          AND updated_at < datetime('now','-2 minutes')
-                    """.trimIndent())
+                    // The legacy custom-item feature was removed. RequestType no longer contains
+                    // CUSTOM_ITEM, so old rows must not survive into RequestDao.valueOf(). Remove
+                    // their request-linked action records first, then the obsolete request rows.
+                    st.executeUpdate("DELETE FROM actions WHERE request_id IN (SELECT id FROM requests WHERE type='CUSTOM_ITEM')")
+                    st.executeUpdate("DELETE FROM requests WHERE type='CUSTOM_ITEM'")
 
                     st.executeUpdate("""
                         UPDATE requests

@@ -22,7 +22,7 @@ class PlayerDao {
 class RelationshipDao {
     fun nextId(c: Connection): String {
         // SQLiteではDB書き込みが単一接続に直列化されるため、固定PKの行を更新して連番を進める。
-        // 以前のMySQL実装ではPRIMARY KEY(id)自体をカウンタとして扱う誤りがあり、
+        // 以前の実装ではPRIMARY KEY(id)自体をカウンタとして扱う誤りがあり、
         // WHERE句なしのUPDATEが重複キー例外を起こしていた。
         // PKは固定値(id=1)にし、カウンタは別カラム(next_value)に分離する。
         c.createStatement().use { it.executeUpdate("INSERT OR IGNORE INTO relationship_sequence(id,next_value) VALUES(1,1)") }

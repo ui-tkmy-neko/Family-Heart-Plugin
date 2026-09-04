@@ -4,6 +4,7 @@ import nekouidaga.net.familyheartplugin.model.RequestProcessingGuard
 
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.TextDecoration
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import nekouidaga.net.familyheartplugin.action.ActionService
 import nekouidaga.net.familyheartplugin.message.Messages
@@ -11,6 +12,7 @@ import nekouidaga.net.familyheartplugin.relationship.RelationshipService
 import nekouidaga.net.familyheartplugin.request.RequestService
 import nekouidaga.net.familyheartplugin.model.RelationshipType
 import nekouidaga.net.familyheartplugin.model.RequestType
+import nekouidaga.net.familyheartplugin.model.RelationshipRequest
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.entity.Player
@@ -27,7 +29,7 @@ import org.bukkit.configuration.file.YamlConfiguration
 // 直接パターンマッチしており、gui.ymlでタイトルをカスタマイズすると
 // クリック判定が一致しなくなりメニューが機能しなくなっていた(設定可能という設計と矛盾)。
 // メニュー種別をInventoryHolderとして持たせ、タイトル文字列に依存しないようにする。
-private enum class MenuType { MAIN, FAMILY, SKINSHIP, REQUESTS, SETTINGS }
+private enum class MenuType { MAIN, FAMILY, SKINSHIP, REQUESTS, MARRIAGE_ROLE, SETTINGS }
 
 private class FamilyHeartHolder(
     val menu: MenuType,
@@ -35,7 +37,8 @@ private class FamilyHeartHolder(
     // slot -> item-key の対応を保持する(バグ修正5: 以前はrawSlotの数値をハードコードしており、
     // 「家族(10)/配偶者(11)/親子関係(12)/Relationship(15)」が全部openFamily()に固定されていて
     // 実質同じ画面しか開けなかった)。
-    val slotToKey: Map<Int, String> = emptyMap()
+    val slotToKey: Map<Int, String> = emptyMap(),
+    val requestId: Long? = null
 ) : InventoryHolder {
     lateinit var inv: Inventory
     override fun getInventory(): Inventory = inv
@@ -51,7 +54,10 @@ class GuiManager(
     @Volatile private var y: YamlConfiguration = YamlConfiguration.loadConfiguration(p.dataFolder.resolve("gui.yml"))
     fun reload() { y = YamlConfiguration.loadConfiguration(p.dataFolder.resolve("gui.yml")) }
 
-    private fun text(value: String): Component = Component.text(value).decoration(TextDecoration.ITALIC, false)
+    private fun text(value: String): Component =
+        LegacyComponentSerializer.legacySection().deserialize(
+            org.bukkit.ChatColor.translateAlternateColorCodes('&', value)
+        ).decoration(TextDecoration.ITALIC, false)
 
     private fun inv(holder: FamilyHeartHolder, title: String, size: Int): Inventory {
         val inventory = Bukkit.createInventory(holder, size, text(title))
@@ -117,15 +123,21 @@ class GuiManager(
                 val holder = FamilyHeartHolder(MenuType.REQUESTS)
                 val inventory = inv(holder, y.getString("requests.title", "申請") ?: "申請", 54)
                 requests.take(45).forEachIndexed { index, request ->
-                    val title = if (request.type == RequestType.CUSTOM_ITEM) "§e#${request.id} §b限定アイテム" else "§e#${request.id} §f${request.type}"
-                    val lore = if (request.type == RequestType.CUSTOM_ITEM) {
-                        listOf("§7対象MCID: §f${request.metadata ?: "?"}", "§a左: 承認", "§c右: 拒否")
-                    } else listOf("§a左: 承認", "§c右: 拒否")
+                    val title = "§e#${request.id} §f${request.type}"
+                    val lore = listOf("§a左: 承認", "§c右: 拒否")
                     inventory.setItem(index, item("PAPER", title, lore))
                 }
                 player.openInventory(inventory)
             })
         }
+    }
+
+    private fun openMarriageRole(player: Player, requestId: Long) {
+        val holder = FamilyHeartHolder(MenuType.MARRIAGE_ROLE, requestId = requestId)
+        val inventory = inv(holder, "結婚申請の承認", 27)
+        inventory.setItem(11, item("GOLD_INGOT", "§6夫として承認", listOf("§7この申請を夫役で承認します")))
+        inventory.setItem(15, item("GOLD_INGOT", "§d妻として承認", listOf("§7この申請を妻役で承認します")))
+        player.openInventory(inventory)
     }
 
     fun openSkinship(player: Player) {
@@ -152,6 +164,88 @@ class GuiManager(
             )
         )
         player.openInventory(inventory)
+    }
+
+    /**
+     * SKINSHIP種別のRequestを承認する一連の処理。GUIのRequests画面クリックと
+     * /fh accept コマンドの両方から呼ばれる共通処理として切り出した。
+     * バグ修正: 以前はこの処理がGUIのクリックハンドラ内にしか実装されておらず、
+     * RequestService.decide()はSKINSHIP種別を常に拒否する設計であるため、
+     * /fh accept (コマンド)でSKINSHIP申請を承認しようとすると常にdatabase-errorに
+     * なっていた(GUIからしか承認できなかった)。承認完了後にonDoneが呼ばれる。
+     */
+    fun acceptSkinship(player: Player, request: RelationshipRequest, onDone: () -> Unit) {
+        if (request.metadata == null) {
+            player.sendMessage(messages.get("general.invalid-input"))
+            return
+        }
+        req.claimAcceptance(player.uniqueId, request.id).thenAccept claimDone@{ claimed ->
+            req.setProcessingGuard(player.uniqueId, claimed.id, RequestProcessingGuard.SKINSHIP_INTENT).thenAccept guardDone@{ guarded ->
+                if (!guarded) {
+                    Bukkit.getScheduler().runTask(p, Runnable { player.sendMessage(messages.get("general.database-error")) })
+                    return@guardDone
+                }
+                Bukkit.getScheduler().runTask(p, Runnable {
+                    val actor = Bukkit.getPlayer(claimed.requester)
+                    val target = Bukkit.getPlayer(claimed.target)
+                    if (actor == null || target == null) {
+                        req.releaseProcessing(player.uniqueId, claimed.id)
+                        player.sendMessage(messages.get("general.offline"))
+                        return@Runnable
+                    }
+                    val actionName = claimed.metadata!!
+                    actions.prepareRequestAction(claimed.id, claimed.requester, claimed.target, actionName).thenAccept { state ->
+                        if (state == nekouidaga.net.familyheartplugin.model.ActionExecutionState.EXECUTED) {
+                            req.setProcessingGuard(player.uniqueId, claimed.id, RequestProcessingGuard.SKINSHIP_EXECUTED).thenAccept {
+                                req.acceptSkinshipAfterAction(player.uniqueId, claimed.id).thenAccept {
+                                    Bukkit.getScheduler().runTask(p, Runnable { onDone() })
+                                }
+                            }
+                            return@thenAccept
+                        }
+                        Bukkit.getScheduler().runTask(p, Runnable {
+                            val currentActor = Bukkit.getPlayer(claimed.requester)
+                            val currentTarget = Bukkit.getPlayer(claimed.target)
+                            if (currentActor == null || currentTarget == null) {
+                                req.releaseProcessing(player.uniqueId, claimed.id)
+                                player.sendMessage(messages.get("general.offline"))
+                                return@Runnable
+                            }
+                            actions.approvedPersistent(currentActor, currentTarget, actionName, claimed.id).thenAccept { result ->
+                                if (!result.success) {
+                                    req.releaseProcessing(player.uniqueId, claimed.id)
+                                    val key = if (result.reason == "self") "relationship.self" else "general.distance"
+                                    currentActor.sendMessage(messages.get(key))
+                                    currentTarget.sendMessage(messages.get(key))
+                                    return@thenAccept
+                                }
+                                req.setProcessingGuard(player.uniqueId, claimed.id, RequestProcessingGuard.SKINSHIP_EXECUTED).thenAccept executionDone@{ executedMarked ->
+                                    if (!executedMarked) {
+                                        p.logger.severe("[FamilyHeart] SKINSHIP action is durably recorded but request guard update failed for request ${claimed.id}; recovery will finalize without replay")
+                                        return@executionDone
+                                    }
+                                    req.acceptSkinshipAfterAction(player.uniqueId, claimed.id).thenAccept {
+                                        Bukkit.getScheduler().runTask(p, Runnable { onDone() })
+                                    }.exceptionally { ex ->
+                                        p.logger.severe("[FamilyHeart] Failed to persist accepted skinship request ${claimed.id}: ${ex.message}")
+                                        null
+                                    }
+                                }
+                            }.exceptionally { ex ->
+                                p.logger.severe("[FamilyHeart] Failed to persist SKINSHIP action for request ${claimed.id}: ${ex.message}")
+                                null
+                            }
+                        })
+                    }.exceptionally { ex ->
+                        Bukkit.getScheduler().runTask(p, Runnable { player.sendMessage(messages.get("general.database-error")) })
+                        null
+                    }
+                })
+            }
+        }.exceptionally { ex ->
+            Bukkit.getScheduler().runTask(p, Runnable { player.sendMessage(messages.get("general.database-error")) })
+            null
+        }
     }
 
     @EventHandler
@@ -204,106 +298,18 @@ class GuiManager(
                 val accept = event.isLeftClick
 
                 // バグ修正: 以前は req.get(id).join() をメインスレッド(インベントリクリックの
-                // イベントハンドラ)から同期的に呼んでおり、クリックのたびにMySQL問い合わせで
+                // イベントハンドラ)から同期的に呼んでおり、クリックのたびにSQLite問い合わせで
                 // メインスレッドがブロックされていた。get()もdecide()も非同期に連結し、
                 // 画面更新などUI操作だけ runTask でメインスレッドへ戻す。
                 req.get(id).thenAccept { request ->
                     if (request == null) return@thenAccept
                     if (request.type == RequestType.MARRY && accept) {
-                        Bukkit.getScheduler().runTask(p, Runnable {
-                            player.sendMessage(messages.get("request.marriage-role-required"))
-                        })
-                        return@thenAccept
-                    }
-
-                    if (accept && request.type == RequestType.CUSTOM_ITEM) {
-                        req.acceptCustomItem(player.uniqueId, request.id).thenAccept {
-                            Bukkit.getScheduler().runTask(p, Runnable {
-                                player.sendMessage(messages.get("custom-item.accepted"))
-                                openRequests(player)
-                            })
-                        }.exceptionally { ex ->
-                            Bukkit.getScheduler().runTask(p, Runnable {
-                                val cause = ex.cause ?: ex
-                                when (cause.message) {
-                                    "custom-item-offline" -> player.sendMessage(messages.get("custom-item.offline", mapOf("mcid" to (request.metadata ?: ""))))
-                                    "custom-item-not-configured" -> player.sendMessage(messages.get("custom-item.not-configured"))
-                                    else -> player.sendMessage(messages.get("general.database-error"))
-                                }
-                            })
-                            null
-                        }
+                        Bukkit.getScheduler().runTask(p, Runnable { openMarriageRole(player, request.id) })
                         return@thenAccept
                     }
 
                     if (accept && request.type == RequestType.SKINSHIP && request.metadata != null) {
-                        req.claimAcceptance(player.uniqueId, request.id).thenAccept claimDone@{ claimed ->
-                            req.setProcessingGuard(player.uniqueId, claimed.id, RequestProcessingGuard.SKINSHIP_INTENT).thenAccept guardDone@{ guarded ->
-                                if (!guarded) {
-                                    Bukkit.getScheduler().runTask(p, Runnable { player.sendMessage(messages.get("general.database-error")) })
-                                    return@guardDone
-                                }
-                                Bukkit.getScheduler().runTask(p, Runnable {
-                                    val actor = Bukkit.getPlayer(claimed.requester)
-                                    val target = Bukkit.getPlayer(claimed.target)
-                                    if (actor == null || target == null) {
-                                        req.releaseProcessing(player.uniqueId, claimed.id)
-                                        player.sendMessage(messages.get("general.offline"))
-                                        return@Runnable
-                                    }
-                                    val actionName = claimed.metadata!!
-                                    actions.prepareRequestAction(claimed.id, claimed.requester, claimed.target, actionName).thenAccept { state ->
-                                        if (state == nekouidaga.net.familyheartplugin.model.ActionExecutionState.EXECUTED) {
-                                            req.setProcessingGuard(player.uniqueId, claimed.id, RequestProcessingGuard.SKINSHIP_EXECUTED).thenAccept {
-                                                req.acceptSkinshipAfterAction(player.uniqueId, claimed.id).thenAccept {
-                                                    Bukkit.getScheduler().runTask(p, Runnable { openRequests(player) })
-                                                }
-                                            }
-                                            return@thenAccept
-                                        }
-                                        Bukkit.getScheduler().runTask(p, Runnable {
-                                            val currentActor = Bukkit.getPlayer(claimed.requester)
-                                            val currentTarget = Bukkit.getPlayer(claimed.target)
-                                            if (currentActor == null || currentTarget == null) {
-                                                req.releaseProcessing(player.uniqueId, claimed.id)
-                                                player.sendMessage(messages.get("general.offline"))
-                                                return@Runnable
-                                            }
-                                            actions.approvedPersistent(currentActor, currentTarget, actionName, claimed.id).thenAccept { result ->
-                                                if (!result.success) {
-                                                    req.releaseProcessing(player.uniqueId, claimed.id)
-                                                    val key = if (result.reason == "self") "relationship.self" else "general.distance"
-                                                    currentActor.sendMessage(messages.get(key))
-                                                    currentTarget.sendMessage(messages.get(key))
-                                                    return@thenAccept
-                                                }
-                                                req.setProcessingGuard(player.uniqueId, claimed.id, RequestProcessingGuard.SKINSHIP_EXECUTED).thenAccept executionDone@{ executedMarked ->
-                                                    if (!executedMarked) {
-                                                        p.logger.severe("[FamilyHeart] SKINSHIP action is durably recorded but request guard update failed for request ${claimed.id}; recovery will finalize without replay")
-                                                        return@executionDone
-                                                    }
-                                                    req.acceptSkinshipAfterAction(player.uniqueId, claimed.id).thenAccept {
-                                                        Bukkit.getScheduler().runTask(p, Runnable { openRequests(player) })
-                                                    }.exceptionally { ex ->
-                                                        p.logger.severe("[FamilyHeart] Failed to persist accepted skinship request ${claimed.id}: ${ex.message}")
-                                                        null
-                                                    }
-                                                }
-                                            }.exceptionally { ex ->
-                                                p.logger.severe("[FamilyHeart] Failed to persist SKINSHIP action for request ${claimed.id}: ${ex.message}")
-                                                null
-                                            }
-                                        })
-                                    }.exceptionally { ex ->
-                                        Bukkit.getScheduler().runTask(p, Runnable { player.sendMessage(messages.get("general.database-error")) })
-                                        null
-                                    }
-                                })
-                            }
-                        }.exceptionally { ex ->
-                            Bukkit.getScheduler().runTask(p, Runnable { player.sendMessage(messages.get("general.database-error")) })
-                            null
-                        }
+                        acceptSkinship(player, request) { openRequests(player) }
                     } else {
                         req.decide(player.uniqueId, id, accept).thenAccept {
                             Bukkit.getScheduler().runTask(p, Runnable { openRequests(player) })
@@ -312,6 +318,39 @@ class GuiManager(
                             null
                         }
                     }
+                }
+            }
+
+            MenuType.MARRIAGE_ROLE -> {
+                event.isCancelled = true
+                val requestId = holder.requestId ?: return
+                val role = when (event.rawSlot) {
+                    11 -> nekouidaga.net.familyheartplugin.model.SpouseRole.HUSBAND
+                    15 -> nekouidaga.net.familyheartplugin.model.SpouseRole.WIFE
+                    else -> return
+                }
+                req.decide(player.uniqueId, requestId, true, role).thenAccept { result ->
+                    Bukkit.getScheduler().runTask(p, Runnable {
+                        player.closeInventory()
+                        player.sendMessage(messages.get("request.accepted"))
+                        Bukkit.getPlayer(result.requester)?.let { requester ->
+                            requester.sendMessage(messages.get("request.accepted"))
+                        }
+                    })
+                }.exceptionally { ex ->
+                    Bukkit.getScheduler().runTask(p, Runnable {
+                        val cause = ex.cause ?: ex
+                        when (cause.message) {
+                            // バグ修正: 以前はコストを常に空文字で表示しており、金額が表示されなかった。
+                            // また economy.charge-failed / marriage.same-role は未対応でdatabase-errorに
+                            // まとめられ、/fh accept コマンド側と表示メッセージが食い違っていた。
+                            "economy.insufficient" -> player.sendMessage(messages.get("economy.insufficient-funds", mapOf("cost" to req.cost(RequestType.MARRY).toString())))
+                            "economy.charge-failed" -> player.sendMessage(messages.get("economy.unavailable"))
+                            "marriage.same-role" -> player.sendMessage(messages.get("request.marriage-same-role"))
+                            else -> player.sendMessage(messages.get("general.database-error"))
+                        }
+                    })
+                    null
                 }
             }
 

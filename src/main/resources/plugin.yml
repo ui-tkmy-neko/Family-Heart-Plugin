@@ -10,7 +10,7 @@ load: POSTWORLD
 authors: [ Ui Tkmy ]
 website: plugin.mc.nekouidaga.net/familyheart-plugin
 
-softdepend: [LuckPerms, Vault]
+softdepend: [LuckPerms, Vault, Geyser-Spigot, floodgate]
 commands:
   familyheart:
     description: FamilyHeartPluginのメインコマンド

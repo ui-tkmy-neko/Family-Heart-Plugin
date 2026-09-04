@@ -5,9 +5,9 @@ enum class RelationshipType { SPOUSE, PARENT_CHILD }
 enum class RelationshipStatus { ACTIVE, REMOVED }
 enum class SpouseRole { WIFE, HUSBAND }
 enum class ParentChildRole { PARENT, CHILD }
-enum class RequestType { MARRY, DIVORCE, CHILD_PARENT, SEPARATION, SKINSHIP, CUSTOM_ITEM }
+enum class RequestType { MARRY, DIVORCE, CHILD_PARENT, SEPARATION, SKINSHIP }
 enum class RequestStatus { PENDING, PROCESSING, ACCEPTED, DENIED, CANCELLED, EXPIRED }
-enum class RequestProcessingGuard { ECONOMY_INTENT, ECONOMY_CHARGED, SKINSHIP_INTENT, SKINSHIP_EXECUTED, CUSTOM_ITEM_INTENT, CUSTOM_ITEM_GIVEN }
+enum class RequestProcessingGuard { ECONOMY_INTENT, ECONOMY_CHARGED, SKINSHIP_INTENT, SKINSHIP_EXECUTED }
 enum class ActionExecutionState { INTENT, EXECUTED }
 enum class PenaltyTargetType { PLAYER, FAMILY, RELATIONSHIP }
 data class PlayerRecord(val uuid:UUID,val mcid:String,val firstSeen:Instant,val lastSeen:Instant)

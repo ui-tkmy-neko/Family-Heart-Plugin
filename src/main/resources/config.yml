@@ -13,9 +13,6 @@ database:
 relationship-limits:
   max-spouses: 1
   max-parents: 2
-custom-item:
-  # ネタ用の専用サブコマンド。Tab補完には表示しません。
-  command: "hdb726yb"
 skinship:
   target-range: 3.0
   default-cooldown-seconds: 0

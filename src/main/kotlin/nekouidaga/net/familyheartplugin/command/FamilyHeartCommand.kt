@@ -83,53 +83,21 @@ class FamilyHeartCommand(
             return true
         }
 
-        if (args[0].equals(settings.customItemCommand(), ignoreCase = false)) {
-            if (args.size != 2) {
-                send(s, "custom-item.usage")
-                return true
-            }
-            val mcid = args[1]
-            if (settings.customItem(mcid) == null) {
-                send(s, "custom-item.not-configured")
-                return true
-            }
-            req.findMcid(mcid).thenAccept { targetUuid ->
-                Bukkit.getScheduler().runTask(p, Runnable {
-                    if (targetUuid == null) {
-                        send(s, "custom-item.target-not-found", mapOf("mcid" to mcid))
-                        return@Runnable
-                    }
-                    val target = Bukkit.getPlayer(targetUuid)
-                    if (target == null) {
-                        send(s, "custom-item.offline", mapOf("mcid" to mcid))
-                        return@Runnable
-                    }
-                    req.createCustomItemRequest(s.uniqueId, target.uniqueId, mcid).thenAccept { id ->
-                        Bukkit.getScheduler().runTask(p, Runnable {
-                            send(s, "custom-item.request-sent", mapOf("mcid" to mcid, "request_id" to id.toString()))
-                            send(target, "custom-item.request-received", mapOf("player" to s.name, "request_id" to id.toString()))
-                        })
-                    }.exceptionally { ex ->
-                        Bukkit.getScheduler().runTask(p, Runnable {
-                            val cause = ex.cause ?: ex
-                            if (cause is nekouidaga.net.familyheartplugin.service.RequestException &&
-                                cause.error == nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING) {
-                                send(s, "request.duplicate-pending")
-                            } else send(s, "general.database-error")
-                        })
-                        null
-                    }
-                })
-            }.exceptionally {
-                Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
-                null
-            }
-            return true
-        }
-
         when (args[0].lowercase()) {
             "family" -> if (ok(s, "familyheart.family")) gui.openFamily(s)
-            "requests" -> if (ok(s, "familyheart.requests")) gui.openRequests(s)
+            "requests" -> {
+                if (!ok(s, "familyheart.requests")) {
+                    send(s, "general.no-permission")
+                    return true
+                }
+                // Backward-compatible command path: /fh requests accept [id] [wife|husband]
+                // The primary command remains /fh accept [id] [wife|husband].
+                if (args.size >= 2 && args[1].equals("accept", ignoreCase = true)) {
+                    val forwarded = arrayOf("accept", *args.drop(2).toTypedArray())
+                    return onCommand(s, c, label, forwarded)
+                }
+                gui.openRequests(s)
+            }
 
             "marry" -> {
                 if (!ok(s, "familyheart.marry")) {
@@ -159,46 +127,95 @@ class FamilyHeartCommand(
                     send(s, "general.no-permission")
                     return true
                 }
-                // /fh accept {husband|wife}
-                val role = args.getOrNull(1)?.uppercase()?.let {
-                    runCatching { SpouseRole.valueOf(it) }.getOrNull()
-                } ?: run {
-                    send(s, "general.invalid-input")
-                    return true
-                }
-                req.findLatestPendingMarriage(s.uniqueId).thenAccept { request ->
-                    Bukkit.getScheduler().runTask(p, Runnable {
-                        if (request == null) {
-                            send(s, "relationship.not-found")
-                            return@Runnable
+
+                // /fh accept                         -> 最新の保留中申請を承認
+                // /fh accept <requestId>            -> 指定申請を承認
+                // /fh accept husband|wife           -> 最新の結婚申請を指定役割で承認
+                // /fh accept <requestId> husband|wife -> 指定結婚申請を指定役割で承認
+                val first = args.getOrNull(1)
+                val second = args.getOrNull(2)
+                val role = sequenceOf(first, second)
+                    .filterNotNull()
+                    .mapNotNull { it.uppercase().let { value -> runCatching { SpouseRole.valueOf(value) }.getOrNull() } }
+                    .firstOrNull()
+                val requestId = first?.toLongOrNull()
+
+                fun complete(request: RelationshipRequest) {
+                    if (request.type == RequestType.MARRY && role == null) {
+                        send(s, "request.marriage-role-required")
+                        return
+                    }
+                    if (request.type != RequestType.MARRY && role != null) {
+                        send(s, "general.invalid-input")
+                        return
+                    }
+                    // バグ修正: 以前はSKINSHIP種別のRequestもここでreq.decide()に渡していたが、
+                    // decide()はSKINSHIPを常に拒否する設計(GUI側のacceptSkinshipAfterAction経由でしか
+                    // 完了できない)ため、/fh accept でスキンシップ申請を承認しようとすると
+                    // 常にgeneral.database-errorになっていた。GUIと共通のacceptSkinship処理を呼ぶ。
+                    if (request.type == RequestType.SKINSHIP) {
+                        gui.acceptSkinship(s, request) { send(s, "request.accepted") }
+                        return
+                    }
+                    req.decide(s.uniqueId, request.id, true, role)
+                        .thenAccept { result ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                send(s, "request.accepted")
+                                Bukkit.getPlayer(result.requester)?.let { requester ->
+                                    requester.sendMessage(msg.get("request.accepted"))
+                                }
+                            })
                         }
-                        req.decide(s.uniqueId, request.id, true, role)
-                            .thenAccept { result ->
-                                Bukkit.getScheduler().runTask(p, Runnable {
-                                    val requester = Bukkit.getPlayer(result.requester)
-                                    send(s, "request.accepted")
-                                    requester?.let {
-                                        send(it, "request.accepted")
-                                        send(it, "relationship.created", mapOf(
-                                            "relationship_id" to (rel.relationships(s.uniqueId)
-                                                .firstOrNull { r -> r.type == RelationshipType.SPOUSE && r.involves(result.requester) }
-                                                ?.relationshipId ?: "")
-                                        ))
+                        .exceptionally { ex ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                val cause = ex.cause ?: ex
+                                when (cause.message) {
+                                    "economy.insufficient" -> {
+                                        val costKey = when (request.type) {
+                                            RequestType.MARRY -> "marriage"
+                                            RequestType.DIVORCE -> "divorce"
+                                            RequestType.CHILD_PARENT -> "child"
+                                            RequestType.SEPARATION -> "separation"
+                                            RequestType.SKINSHIP -> "marriage"
+                                        }
+                                        send(s, "economy.insufficient-funds", mapOf("cost" to settings.cost(costKey).toString()))
                                     }
-                                })
-                            }
-                            .exceptionally { ex ->
-                                Bukkit.getScheduler().runTask(p, Runnable {
-                                    val cause = ex.cause ?: ex
-                                    when (cause.message) {
-                                        "economy.insufficient" -> send(s, "economy.insufficient-funds", mapOf("cost" to settings.cost("marriage").toString()))
-                                        "economy.charge-failed" -> send(s, "economy.unavailable")
-                                        else -> send(s, "general.database-error")
-                                    }
-                                })
-                                null
-                            }
-                    })
+                                    "economy.charge-failed" -> send(s, "economy.unavailable")
+                                    "marriage.same-role" -> send(s, "request.marriage-same-role")
+                                    else -> send(s, "general.database-error")
+                                }
+                            })
+                            null
+                        }
+                }
+
+                if (requestId != null && second != null && role == null) {
+                    send(s, "general.invalid-input")
+                } else if (requestId != null) {
+                    req.get(requestId).thenAccept { request ->
+                        Bukkit.getScheduler().runTask(p, Runnable {
+                            if (request == null || request.target != s.uniqueId || request.status != RequestStatus.PENDING) {
+                                send(s, "relationship.not-found")
+                            } else complete(request)
+                        })
+                    }
+                } else if (first != null && role == null) {
+                    send(s, "general.invalid-input")
+                } else if (role != null) {
+                    // A role-only acceptance is explicitly a marriage selection; never
+                    // accidentally apply the role to the newest non-marriage request.
+                    req.findLatestPendingMarriage(s.uniqueId).thenAccept { request ->
+                        Bukkit.getScheduler().runTask(p, Runnable {
+                            if (request == null) send(s, "relationship.not-found") else complete(request)
+                        })
+                    }
+                } else {
+                    req.pending(s.uniqueId).thenAccept { requests ->
+                        val request = requests.firstOrNull()
+                        Bukkit.getScheduler().runTask(p, Runnable {
+                            if (request == null) send(s, "relationship.not-found") else complete(request)
+                        })
+                    }
                 }
             }
 

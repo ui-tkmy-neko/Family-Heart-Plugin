@@ -29,7 +29,7 @@ Maven がインストール済みなら、プロジェクトフォルダで `mvn
 
 
 ## 結婚申請（同性ペア対応）
-`/fh marry [MCID] {husband|wife}` で申請者の役割を指定し、対象側は `/fh accept {husband|wife}` で自身の役割を指定して承認します。wife×wife / husband×husband / wife×husband をそのまま保存します。
+`/fh marry [MCID] {husband|wife}` で申請者の役割を指定し、対象側は `/fh accept [requestId] {husband|wife}` で自身の役割を指定して承認します。申請者と対象者が同じ役割（wife×wife / husband×husband）になる承認は拒否されます。
 
 ## Maven build
 
@@ -66,15 +66,6 @@ Build: `mvn clean package`
 - Economy charges for request-based relationship operations are applied on acceptance/success, not request creation.
 - Buff clear/recompute removes actual PotionEffects as well as internal tracking.
 
-## ネタ用カスタムアイテム申請
-
-`config.yml` の `custom-item.command` に設定した専用サブコマンド（初期値 `hdb726yb`）で、`/fh <専用サブコマンド> <MCID>` を実行すると、`custom-items.yml` にそのMCID用アイテムが定義され、かつ対象プレイヤーがオンラインの場合のみ申請を作成します。対象プレイヤーが申請GUIで承認すると、設定されたアイテムを受け取ります。専用サブコマンドはTab補完には表示しません。
-
-## Custom item data
-
-`custom-items.yml` の `custom-model-data` は Paper 26.2 の Item Data Component として付与され、リソースパック側のカスタムテクスチャ識別に利用できます。さらにアイテムにはFamilyHeart固有のPDCとして `custom_item_id`、`custom_item_mcid`、`custom_item_request_id` を保存します。
-
-`effects` を設定すると、申請承認時に対象プレイヤーへ指定したPotionEffectを付与します。`duration-ticks` または `duration-seconds`、`amplifier`、`ambient`、`particles`、`icon` を指定できます。
 
 
 ## Database

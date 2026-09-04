@@ -1,9 +1,0 @@
-family-buffs:
-  example:
-    enabled: false
-    condition: FAMILY_MEMBERS_ONLINE
-    required: 3
-    amplifier: 1
-    duration: 120
-    effect: SPEED
-    multiplier: 1.0

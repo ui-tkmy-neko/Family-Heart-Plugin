@@ -5,7 +5,6 @@ import nekouidaga.net.familyheartplugin.database.RequestDao
 import nekouidaga.net.familyheartplugin.database.tx
 import nekouidaga.net.familyheartplugin.config.EconomyService
 import nekouidaga.net.familyheartplugin.database.PlayerDao
-import nekouidaga.net.familyheartplugin.service.CustomItemService
 import nekouidaga.net.familyheartplugin.config.Settings
 import org.bukkit.Bukkit
 import nekouidaga.net.familyheartplugin.model.*
@@ -21,8 +20,7 @@ class RequestService(
     private val rel: RelationshipService,
     private val settings: Settings,
     private val economy: EconomyService,
-    private val players: PlayerDao,
-    private val customItems: CustomItemService
+    private val players: PlayerDao
 ) {
     private val expirationRunning = AtomicBoolean(false)
     fun create(a: UUID, b: UUID, type: RequestType, metadata: String? = null): CompletableFuture<Long> =
@@ -58,21 +56,6 @@ class RequestService(
         db.connection().use { c -> players.byMcid(c, mcid) }
     }, db.executor)
 
-    fun createCustomItemRequest(requester: UUID, target: UUID, mcid: String): CompletableFuture<Long> = CompletableFuture.supplyAsync({
-        if (customItems.definition(mcid) == null) throw IllegalArgumentException("custom-item-not-configured")
-        if (target == requester) throw IllegalArgumentException("custom-item-self")
-        db.connection().use { c ->
-            c.tx {
-                if (dao.pendingBetween(c, requester, target, RequestType.CUSTOM_ITEM).isNotEmpty()) {
-                    throw nekouidaga.net.familyheartplugin.service.RequestException(
-                        nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
-                    )
-                }
-                dao.create(c, requester, target, RequestType.CUSTOM_ITEM, mcid)
-            }
-        }
-    }, db.executor)
-
     fun get(id: Long): CompletableFuture<RelationshipRequest?> = CompletableFuture.supplyAsync({
         db.connection().use { c -> dao.byId(c, id) }
     }, db.executor)
@@ -81,13 +64,16 @@ class RequestService(
         db.connection().use { c -> dao.pendingFor(c, u) }
     }, db.executor)
 
+    /** GUI等、Serviceの外からも承認コストを参照できるようにする公開ラッパー。 */
+    fun cost(type: RequestType): Double = acceptanceCost(type)
+
     private fun acceptanceCost(type: RequestType): Double {
         val key = when (type) {
             RequestType.MARRY -> "marriage"
             RequestType.DIVORCE -> "divorce"
             RequestType.CHILD_PARENT -> "child"
             RequestType.SEPARATION -> "separation"
-            RequestType.SKINSHIP, RequestType.CUSTOM_ITEM -> return 0.0
+            RequestType.SKINSHIP -> return 0.0
         }
         return if (settings.econEnabled()) settings.cost(key).coerceAtLeast(0.0) else 0.0
     }
@@ -166,10 +152,6 @@ class RequestService(
                 if (initial.type == RequestType.SKINSHIP) {
                     return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("skinship-use-acceptSkinshipAfterAction"))
                 }
-                if (initial.type == RequestType.CUSTOM_ITEM) {
-                    return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("custom-item-use-acceptCustomItem"))
-                }
-
                 claimAcceptance(actor, id).thenCompose { claimed ->
                     val cost = acceptanceCost(claimed.type)
                     if (cost <= 0.0) {
@@ -214,61 +196,6 @@ class RequestService(
             }
     }
 
-    fun acceptCustomItem(actor: UUID, id: Long): CompletableFuture<RelationshipRequest> {
-        return claimAcceptance(actor, id).thenCompose { claimed ->
-            if (claimed.type != RequestType.CUSTOM_ITEM) {
-                return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("invalid"))
-            }
-            val mcid = claimed.metadata ?: return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("custom-item-not-configured"))
-            if (customItems.definition(mcid) == null) {
-                return@thenCompose releaseProcessing(actor, id).thenCompose {
-                    CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("custom-item-not-configured"))
-                }
-            }
-            setProcessingGuard(actor, id, RequestProcessingGuard.CUSTOM_ITEM_INTENT).thenCompose { guarded ->
-                if (!guarded) return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("request.guard-failed"))
-                val target = Bukkit.getPlayer(actor)
-                    ?: return@thenCompose releaseProcessing(actor, id).thenCompose {
-                        CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("custom-item-offline"))
-                    }
-                val result = CompletableFuture<Boolean>()
-                Bukkit.getScheduler().runTask(customItems.plugin, Runnable {
-                    try {
-                        result.complete(customItems.give(target, mcid, id))
-                    } catch (t: Throwable) {
-                        result.completeExceptionally(t)
-                    }
-                })
-                result.thenCompose { given ->
-                    if (!given) {
-                        releaseProcessing(actor, id).thenCompose {
-                            CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("custom-item-not-configured"))
-                        }
-                    } else {
-                        setProcessingGuard(actor, id, RequestProcessingGuard.CUSTOM_ITEM_GIVEN).thenCompose { marked ->
-                            if (!marked) CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("custom-item-reconciliation-required"))
-                            else completeCustomItemAcceptance(actor, id)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun completeCustomItemAcceptance(actor: UUID, id: Long): CompletableFuture<RelationshipRequest> =
-        CompletableFuture.supplyAsync({
-            db.connection().use { c ->
-                c.tx {
-                    val request = dao.byId(c, id, true) ?: throw IllegalArgumentException("request")
-                    if (request.target != actor || request.status != RequestStatus.PROCESSING || request.type != RequestType.CUSTOM_ITEM || request.processingGuard != RequestProcessingGuard.CUSTOM_ITEM_GIVEN) {
-                        throw IllegalStateException("invalid")
-                    }
-                    dao.update(c, id, RequestStatus.ACCEPTED)
-                    request
-                }
-            }
-        }, db.executor)
-
     private fun completeDecision(
         actor: UUID,
         id: Long,
@@ -291,6 +218,7 @@ class RequestService(
                             RequestType.MARRY -> {
                                 val requesterRole = runCatching { SpouseRole.valueOf(request.metadata ?: error("marriage role missing")) }.getOrElse { throw IllegalStateException("invalid requester role") }
                                 val targetRole = acceptedSpouseRole ?: throw IllegalArgumentException("/fh accept {husband|wife}")
+                                if (requesterRole == targetRole) throw IllegalArgumentException("marriage.same-role")
                                 rel.createWithinTransaction(c, request.requester, request.target, RelationshipType.SPOUSE, requesterRole.name, targetRole.name).second
                             }
                             RequestType.CHILD_PARENT -> {
@@ -302,7 +230,7 @@ class RequestService(
                             }
                             RequestType.DIVORCE -> rel.removeWithinTransaction(c, request.requester, request.target, RelationshipType.SPOUSE)
                             RequestType.SEPARATION -> rel.removeWithinTransaction(c, request.requester, request.target, RelationshipType.PARENT_CHILD)
-                            RequestType.SKINSHIP, RequestType.CUSTOM_ITEM -> emptySet()
+                            RequestType.SKINSHIP -> emptySet()
                         }
                         dao.update(c, id, RequestStatus.ACCEPTED)
                         request
