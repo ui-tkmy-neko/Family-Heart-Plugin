@@ -66,7 +66,7 @@ class ActionService(
                 Bukkit.getScheduler().runTask(p, Runnable {
                     onApproval(id)
                     if (target.isOnline) {
-                        target.sendMessage(messages.get("request.${action}.received", mapOf("player" to actor.name, "request_id" to id.toString())))
+                        target.sendMessage(messages.request(RequestType.SKINSHIP, "received", action, mapOf("player" to actor.name, "target" to target.name, "request_id" to id.toString())))
                     }
                 })
             }.exceptionally { t ->

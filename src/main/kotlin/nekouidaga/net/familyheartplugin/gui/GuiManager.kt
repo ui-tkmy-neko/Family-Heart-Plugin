@@ -105,7 +105,7 @@ class GuiManager(
         val holder = FamilyHeartHolder(MenuType.MAIN, slotToKey)
         val inventory = inv(holder, y.getString("main.title", "FamilyHeart") ?: "FamilyHeart", y.getInt("main.size", 27))
         decorate(inventory, y.getString("decoration.main-frame", "CYAN_STAINED_GLASS_PANE") ?: "CYAN_STAINED_GLASS_PANE")
-        listOf("family", "spouse", "parent-child", "skinship", "requests", "relationship", "info", "settings").forEach { key ->
+        listOf("family", "spouse", "parent-child", "skinship", "requests", "relationship", "settings").forEach { key ->
             val section = y.getConfigurationSection("main.items.$key") ?: return@forEach
             val slot = section.getInt("slot")
             slotToKey[slot] = key
@@ -374,7 +374,6 @@ class GuiManager(
                     "spouse" -> if (player.hasPermission("familyheart.family")) openInfo(player, player.uniqueId) else player.sendMessage(messages.get("general.no-permission"))
                     "parent-child" -> if (player.hasPermission("familyheart.family")) openFamily(player, RelationshipType.PARENT_CHILD, "parent-child", "親子関係") else player.sendMessage(messages.get("general.no-permission"))
                     "relationship" -> if (player.hasPermission("familyheart.family")) openFamily(player, null, "relationship", "Relationship情報") else player.sendMessage(messages.get("general.no-permission"))
-                    "info" -> if (player.hasPermission("familyheart.info")) openInfo(player, player.uniqueId) else player.sendMessage(messages.get("general.no-permission"))
                     "skinship" -> openSkinship(player)
                     "requests" -> if (player.hasPermission("familyheart.requests")) openRequests(player) else player.sendMessage(messages.get("general.no-permission"))
                     "settings" -> openSettings(player)
@@ -442,9 +441,11 @@ class GuiManager(
                         req.decide(player.uniqueId, id, accept, null, player.name).thenAccept { result ->
                             Bukkit.getScheduler().runTask(p, Runnable {
                                 val phase = if (accept) "accepted" else "denied"
-                                val vars = mapOf("request_id" to result.id.toString(), "player" to player.name, "target" to player.name)
-                                player.sendMessage(messages.request(result.type, phase, result.metadata, vars))
-                                Bukkit.getPlayer(result.requester)?.sendMessage(messages.request(result.type, phase, result.metadata, vars))
+                                val notifyPhase = if (accept) "accepted-notify" else "deny-notify"
+                                val targetName = player.name
+                                val requesterName = Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()
+                                player.sendMessage(messages.request(result.type, phase, result.metadata, mapOf("request_id" to result.id.toString(), "player" to requesterName, "target" to targetName)))
+                                Bukkit.getPlayer(result.requester)?.sendMessage(messages.request(result.type, notifyPhase, result.metadata, mapOf("request_id" to result.id.toString(), "player" to targetName, "target" to targetName)))
                                 openRequests(player)
                             })
                         }.exceptionally { ex ->
@@ -474,9 +475,10 @@ class GuiManager(
                 req.decide(player.uniqueId, requestId, true, role, player.name).thenAccept { result ->
                     Bukkit.getScheduler().runTask(p, Runnable {
                         player.closeInventory()
-                        val vars = mapOf("request_id" to requestId.toString(), "player" to player.name, "target" to player.name)
-                        player.sendMessage(messages.request(RequestType.MARRY, "accepted", role.name, vars))
-                        Bukkit.getPlayer(result.requester)?.sendMessage(messages.request(RequestType.MARRY, "accepted", role.name, vars))
+                        val targetName = player.name
+                        val requesterName = Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()
+                        player.sendMessage(messages.request(RequestType.MARRY, "accepted", role.name, mapOf("request_id" to requestId.toString(), "player" to requesterName, "target" to targetName)))
+                        Bukkit.getPlayer(result.requester)?.sendMessage(messages.request(RequestType.MARRY, "accepted-notify", role.name, mapOf("request_id" to requestId.toString(), "player" to targetName, "target" to targetName)))
                     })
                 }.exceptionally { ex ->
                     Bukkit.getScheduler().runTask(p, Runnable {

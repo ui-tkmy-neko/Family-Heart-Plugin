@@ -78,8 +78,8 @@ class FamilyHeartCommand(
         req.create(pl.uniqueId, target.uniqueId, type, meta, pl.name, target.name)
             .thenAccept { id ->
                 Bukkit.getScheduler().runTask(p, Runnable {
-                    sendRaw(pl, safeRequestMessage(type, "sent", meta, mapOf("player" to target.name, "request_id" to id.toString())))
-                    sendRaw(target, safeRequestMessage(type, "received", meta, mapOf("player" to pl.name, "request_id" to id.toString())))
+                    sendRaw(pl, safeRequestMessage(type, "sent", meta, mapOf("player" to pl.name, "target" to target.name, "request_id" to id.toString())))
+                    sendRaw(target, safeRequestMessage(type, "received", meta, mapOf("player" to pl.name, "target" to target.name, "request_id" to id.toString())))
                 })
             }
             .exceptionally { ex ->
@@ -202,8 +202,8 @@ class FamilyHeartCommand(
                     req.decide(s.uniqueId, request.id, true, parsedRole, s.name)
                         .thenAccept { result ->
                             Bukkit.getScheduler().runTask(p, Runnable {
-                                sendRaw(s, safeRequestMessage(request.type, "accepted", request.metadata, mapOf("player" to (Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()), "request_id" to request.id.toString())))
-                                Bukkit.getPlayer(result.requester)?.sendMessage(safeRequestMessage(request.type, "accept-notify", request.metadata, mapOf("player" to s.name, "request_id" to request.id.toString())))
+                                sendRaw(s, safeRequestMessage(request.type, "accepted", request.metadata, mapOf("player" to (Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()), "target" to s.name, "request_id" to request.id.toString())))
+                                Bukkit.getPlayer(result.requester)?.sendMessage(safeRequestMessage(request.type, "accepted-notify", request.metadata, mapOf("player" to s.name, "target" to s.name, "request_id" to request.id.toString())))
                             })
                         }
                         .exceptionally { ex ->
@@ -296,7 +296,7 @@ class FamilyHeartCommand(
                         }
                         req.decide(s.uniqueId, request.id, false).thenAccept { result ->
                             Bukkit.getScheduler().runTask(p, Runnable {
-                                sendRaw(s, safeRequestMessage(result.type, "denied", result.metadata, mapOf("player" to (Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()), "request_id" to result.id.toString())))
+                                sendRaw(s, safeRequestMessage(result.type, "denied", result.metadata, mapOf("player" to (Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()), "target" to s.name, "request_id" to result.id.toString())))
                                 Bukkit.getPlayer(result.requester)?.sendMessage(safeRequestMessage(result.type, "deny-notify", result.metadata, mapOf("player" to s.name, "request_id" to result.id.toString())))
                             })
                         }.exceptionally { ex ->

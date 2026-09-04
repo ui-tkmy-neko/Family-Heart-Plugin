@@ -40,9 +40,15 @@ request:
     accepted:
       wife: "&a%player%&f の結婚申請を妻で承認しました。&7 #%request_id%"
       husband: "&a%player%&f の結婚申請を夫で承認しました。&7 #%request_id%"
+    accepted-notify:
+      wife: "&aあなたの妻としての結婚申請が承認されました。&7 #%request_id%"
+      husband: "&aあなたの夫としての結婚申請が承認されました。&7 #%request_id%"
     denied:
       wife: "&c%player%&f の妻としての結婚申請を拒否しました。&7 #%request_id%"
       husband: "&c%player%&f の夫としての結婚申請を拒否しました。&7 #%request_id%"
+    deny-notify:
+      wife: "&cあなたの妻としての結婚申請が拒否されました。&7 #%request_id%"
+      husband: "&cあなたの夫としての結婚申請が拒否されました。&7 #%request_id%"
   child:
     sent:
       parent: "&a%target%&f に親になってほしいと申請しました。&7 #%request_id%"
@@ -56,32 +62,48 @@ request:
     denied:
       parent: "&c%player%&f の親子関係申請を拒否しました。&7 #%request_id%"
       child: "&c%player%&f の親子関係申請を拒否しました。&7 #%request_id%"
+    accepted-notify:
+      parent: "&aあなたの親子関係申請が承認されました。&7 #%request_id%"
+      child: "&aあなたの親子関係申請が承認されました。&7 #%request_id%"
+    deny-notify:
+      parent: "&cあなたの親子関係申請が拒否されました。&7 #%request_id%"
+      child: "&cあなたの親子関係申請が拒否されました。&7 #%request_id%"
   skinship:
     hug:
       sent: "&d%target%&f にハグを申請しました。&7 #%request_id%"
       received: "&d%player%&f からハグの申請が届きました。&7 #%request_id%"
       accepted: "&a%player%&f のハグを受けました。&7 #%request_id%"
+      accepted-notify: "&aあなたのハグ申請が承認されました。&7 #%request_id%"
       denied: "&c%player%&f のハグ申請を拒否しました。&7 #%request_id%"
+      deny-notify: "&cあなたのハグ申請が拒否されました。&7 #%request_id%"
     kiss:
       sent: "&d%target%&f にキスを申請しました。&7 #%request_id%"
       received: "&d%player%&f からキスの申請が届きました。&7 #%request_id%"
       accepted: "&a%player%&f のキスを受けました。&7 #%request_id%"
+      accepted-notify: "&aあなたのキス申請が承認されました。&7 #%request_id%"
       denied: "&c%player%&f のキス申請を拒否しました。&7 #%request_id%"
+      deny-notify: "&cあなたのキス申請が拒否されました。&7 #%request_id%"
     feed:
       sent: "&d%target%&f に食事を申請しました。&7 #%request_id%"
       received: "&d%player%&f から食事の申請が届きました。&7 #%request_id%"
       accepted: "&a%player%&f の食事申請を承認しました。&7 #%request_id%"
+      accepted-notify: "&aあなたの食事申請が承認されました。&7 #%request_id%"
       denied: "&c%player%&f の食事申請を拒否しました。&7 #%request_id%"
+      deny-notify: "&cあなたの食事申請が拒否されました。&7 #%request_id%"
   divorce:
     sent: "&e%target%&f に離婚申請を送りました。&7 #%request_id%"
     received: "&e%player%&f から離婚申請が届きました。&7 #%request_id%"
     accepted: "&a%player%&f の離婚申請を承認しました。&7 #%request_id%"
+    accepted-notify: "&aあなたの離婚申請が承認されました。&7 #%request_id%"
     denied: "&c%player%&f の離婚申請を拒否しました。&7 #%request_id%"
+    deny-notify: "&cあなたの離婚申請が拒否されました。&7 #%request_id%"
   separation:
     sent: "&e%target%&f に親子関係の解除を申請しました。&7 #%request_id%"
     received: "&e%player%&f から親子関係の解除申請が届きました。&7 #%request_id%"
     accepted: "&a%player%&f の親子関係解除申請を承認しました。&7 #%request_id%"
+    accepted-notify: "&aあなたの親子関係解除申請が承認されました。&7 #%request_id%"
     denied: "&c%player%&f の親子関係解除申請を拒否しました。&7 #%request_id%"
+    deny-notify: "&cあなたの親子関係解除申請が拒否されました。&7 #%request_id%"
 info:
   title: "&bFamilyHeart情報"
   summary: "&7FamilyHeart情報"
