@@ -6,9 +6,9 @@ FamilyHeartPluginは、Paperサーバー向けの家族・Relationship管理プ�
 
 ## 対応環境
 
-* Minecraft: 1.21.11
+* Minecraft: 26.2
 * Paper: 26.2
-* Java: 24以上
+* Java: 25以上
 * データベース: SQLite
 
 ### Soft Dependency
