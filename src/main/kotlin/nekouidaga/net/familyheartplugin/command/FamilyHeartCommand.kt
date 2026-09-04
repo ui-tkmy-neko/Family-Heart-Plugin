@@ -55,27 +55,37 @@ class FamilyHeartCommand(
         }
     }
 
-    private fun requestMessageKey(type: RequestType, phase: String, meta: String?): String = msg.requestKey(type, phase, meta)
-
-    private fun requestMessage(player: Player, key: String, vars: Map<String, String>) {
-        player.sendMessage(msg.get(key, vars))
+    private fun requestMessageKey(type: RequestType, event: String, metadata: String? = null): String {
+        val prefix = when (type) {
+            RequestType.MARRY -> "request.marry"
+            RequestType.CHILD_PARENT -> "request.child"
+            RequestType.DIVORCE -> "request.divorce"
+            RequestType.SEPARATION -> "request.separation"
+            RequestType.SKINSHIP -> "request.skinship"
+        }
+        return if (type == RequestType.MARRY) {
+            val role = metadata?.lowercase()
+            if (role == "wife" || role == "husband") "$prefix.$event.$role" else "$prefix.$event"
+        } else {
+            "$prefix.$event"
+        }
     }
+
+    private fun safeRequestMessage(type: RequestType, event: String, metadata: String? = null, vars: Map<String, String> = emptyMap()): String =
+        msg.get(requestMessageKey(type, event, metadata), vars)
 
     private fun request(pl: Player, target: Player, type: RequestType, meta: String? = null) {
         req.create(pl.uniqueId, target.uniqueId, type, meta, pl.name, target.name)
             .thenAccept { id ->
                 Bukkit.getScheduler().runTask(p, Runnable {
-                    val vars = mapOf("request_id" to id.toString(), "player" to pl.name, "target" to target.name, "role" to (meta?.lowercase() ?: ""))
-                    requestMessage(pl, requestMessageKey(type, "sent", meta), vars)
-                    requestMessage(target, requestMessageKey(type, "received", meta), vars)
+                    sendRaw(pl, safeRequestMessage(type, "sent", meta, mapOf("player" to target.name, "request_id" to id.toString())))
+                    sendRaw(target, safeRequestMessage(type, "received", meta, mapOf("player" to pl.name, "request_id" to id.toString())))
                 })
             }
             .exceptionally { ex ->
                 val cause = ex.cause ?: ex
-                p.logger.warning("[FamilyHeart] Request create failed: type=$type, requester=${pl.uniqueId}, target=${target.uniqueId}, cause=${cause.javaClass.name}: ${cause.message}")
+                p.logger.warning("[FamilyHeart] Request create failed: type=$type, requester=${safeIdentity(pl)}, target=${safeIdentity(target)}, cause=${cause.javaClass.name}: ${cause.message}")
                 Bukkit.getScheduler().runTask(p, Runnable {
-                    // バグ修正(7): 以前は重複申請チェックが無く、常にdatabase-errorとして
-                    // 一括りにしていた。RequestException(DUPLICATE_PENDING)は専用メッセージにする。
                     if (cause is nekouidaga.net.familyheartplugin.service.RequestException &&
                         cause.error == nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
                     ) {
@@ -87,6 +97,9 @@ class FamilyHeartCommand(
                 null
             }
     }
+
+    private fun sendRaw(s: Player, message: String) = s.sendMessage(message)
+    private fun safeIdentity(player: Player): String = "${player.name}(${player.uniqueId})"
 
     override fun onCommand(s: CommandSender, c: Command, label: String, args: Array<String>): Boolean {
         if (s !is Player) {
@@ -103,7 +116,7 @@ class FamilyHeartCommand(
         }
 
         when (args[0].lowercase()) {
-            "family" -> if (ok(s, "familyheart.family")) gui.openFamily(s) else send(s, "general.no-permission")
+            "family" -> if (ok(s, "familyheart.family")) gui.openFamily(s)
             "requests" -> {
                 if (!ok(s, "familyheart.requests")) {
                     send(s, "general.no-permission")
@@ -183,17 +196,14 @@ class FamilyHeartCommand(
                     }
 
                     if (request.type == RequestType.SKINSHIP) {
-                        gui.acceptSkinship(s, request) {
-                            s.sendMessage(msg.request(request.type, "accepted", request.metadata, mapOf("request_id" to request.id.toString(), "player" to s.name, "target" to s.name)))
-                        }
+                        gui.acceptSkinship(s, request) { send(s, "request.accepted") }
                         return
                     }
                     req.decide(s.uniqueId, request.id, true, parsedRole, s.name)
                         .thenAccept { result ->
                             Bukkit.getScheduler().runTask(p, Runnable {
-                                val vars = mapOf("request_id" to request.id.toString(), "player" to s.name, "target" to s.name)
-                                s.sendMessage(msg.request(request.type, "accepted", request.metadata, vars))
-                                Bukkit.getPlayer(result.requester)?.sendMessage(msg.request(request.type, "accepted", request.metadata, vars))
+                                sendRaw(s, safeRequestMessage(request.type, "accepted", request.metadata, mapOf("player" to (Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()), "request_id" to request.id.toString())))
+                                Bukkit.getPlayer(result.requester)?.sendMessage(safeRequestMessage(request.type, "accept-notify", request.metadata, mapOf("player" to s.name, "request_id" to request.id.toString())))
                             })
                         }
                         .exceptionally { ex ->
@@ -286,9 +296,8 @@ class FamilyHeartCommand(
                         }
                         req.decide(s.uniqueId, request.id, false).thenAccept { result ->
                             Bukkit.getScheduler().runTask(p, Runnable {
-                                val vars = mapOf("request_id" to result.id.toString(), "player" to s.name, "target" to s.name)
-                                s.sendMessage(msg.request(result.type, "denied", result.metadata, vars))
-                                Bukkit.getPlayer(result.requester)?.sendMessage(msg.request(result.type, "denied", result.metadata, vars))
+                                sendRaw(s, safeRequestMessage(result.type, "denied", result.metadata, mapOf("player" to (Bukkit.getPlayer(result.requester)?.name ?: result.requester.toString()), "request_id" to result.id.toString())))
+                                Bukkit.getPlayer(result.requester)?.sendMessage(safeRequestMessage(result.type, "deny-notify", result.metadata, mapOf("player" to s.name, "request_id" to result.id.toString())))
                             })
                         }.exceptionally { ex ->
                             p.logger.warning("[FamilyHeart] Request deny failed: id=${request.id}, cause=${ex.message}")
@@ -377,13 +386,8 @@ class FamilyHeartCommand(
                     send(s, "general.no-target")
                     return true
                 }
-                val action = args[0].lowercase()
-                val r = act.execute(s, t, action) { id ->
-                    s.sendMessage(msg.request(RequestType.SKINSHIP, "sent", action, mapOf(
-                        "request_id" to id.toString(),
-                        "player" to s.name,
-                        "target" to t.name
-                    )))
+                val r = act.execute(s, t, args[0].lowercase()) { id ->
+                    send(s, "request.${args[0].lowercase()}.sent", mapOf("player" to t.name, "request_id" to id.toString()))
                 }
                 when {
                     r.success -> send(s, "action.executed", mapOf("action" to args[0]))

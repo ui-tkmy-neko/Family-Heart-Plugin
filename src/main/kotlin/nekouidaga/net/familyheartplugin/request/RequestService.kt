@@ -72,7 +72,7 @@ class RequestService(
     fun mcid(uuid: UUID): CompletableFuture<String?> {
         mcids[uuid]?.let { return CompletableFuture.completedFuture(it) }
         Bukkit.getPlayer(uuid)?.name?.let { name ->
-            val value = canonicalMcid(name)
+            val value = name
             mcids[uuid] = value
             return CompletableFuture.completedFuture(value)
         }

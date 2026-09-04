@@ -32,17 +32,17 @@ request:
   not-found: "&c受理できる保留中の申請が見つかりません。"
   marry:
     sent:
-      wife: "&d%target%&f に、妻役として結婚したいと申請しました。&7 #%request_id%"
-      husband: "&d%target%&f に、夫役として結婚したいと申請しました。&7 #%request_id%"
+      wife: "&d%target%&f に、妻として結婚したいと申請しました。&7 #%request_id%"
+      husband: "&d%target%&f に、夫として結婚したいと申請しました。&7 #%request_id%"
     received:
-      wife: "&d%player%&f が、妻役として結婚したいと言っています。&7 #%request_id%"
-      husband: "&d%player%&f が、夫役として結婚したいと言っています。&7 #%request_id%"
+      wife: "&d%player%&f が、妻として結婚したいと言っています。&7 #%request_id%"
+      husband: "&d%player%&f が、夫として結婚したいと言っています。&7 #%request_id%"
     accepted:
-      wife: "&a%player%&f の結婚申請を妻役で承認しました。&7 #%request_id%"
-      husband: "&a%player%&f の結婚申請を夫役で承認しました。&7 #%request_id%"
+      wife: "&a%player%&f の結婚申請を妻で承認しました。&7 #%request_id%"
+      husband: "&a%player%&f の結婚申請を夫で承認しました。&7 #%request_id%"
     denied:
-      wife: "&c%player%&f の妻役としての結婚申請を拒否しました。&7 #%request_id%"
-      husband: "&c%player%&f の夫役としての結婚申請を拒否しました。&7 #%request_id%"
+      wife: "&c%player%&f の妻としての結婚申請を拒否しました。&7 #%request_id%"
+      husband: "&c%player%&f の夫としての結婚申請を拒否しました。&7 #%request_id%"
   child:
     sent:
       parent: "&a%target%&f に親になってほしいと申請しました。&7 #%request_id%"
