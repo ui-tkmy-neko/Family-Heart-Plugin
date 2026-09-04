@@ -1,277 +1,276 @@
 package nekouidaga.net.familyheartplugin.request
 
-import nekouidaga.net.familyheartplugin.database.DatabaseManager
-import nekouidaga.net.familyheartplugin.database.RequestDao
-import nekouidaga.net.familyheartplugin.database.tx
 import nekouidaga.net.familyheartplugin.config.EconomyService
-import nekouidaga.net.familyheartplugin.database.PlayerDao
 import nekouidaga.net.familyheartplugin.config.Settings
-import org.bukkit.Bukkit
+import nekouidaga.net.familyheartplugin.database.DatabaseManager
+import nekouidaga.net.familyheartplugin.database.PlayerDao
+import nekouidaga.net.familyheartplugin.database.tx
 import nekouidaga.net.familyheartplugin.model.*
 import nekouidaga.net.familyheartplugin.relationship.RelationshipService
-import java.sql.SQLIntegrityConstraintViolationException
+import org.bukkit.Bukkit
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * In-memory request registry. Requests are intentionally transient: they expire after a short
+ * period or when either participant disconnects. SQLite is reserved for durable domain data and
+ * request audit history is written asynchronously to logs/latest.log.
+ */
 class RequestService(
     private val db: DatabaseManager,
-    private val dao: RequestDao,
     private val rel: RelationshipService,
     private val settings: Settings,
     private val economy: EconomyService,
-    private val players: PlayerDao
+    private val players: PlayerDao,
+    private val requestLog: RequestLogService
 ) {
-    private val expirationRunning = AtomicBoolean(false)
-    fun create(a: UUID, b: UUID, type: RequestType, metadata: String? = null): CompletableFuture<Long> =
-        CompletableFuture.supplyAsync({
-            db.connection().use { c ->
-                c.tx {
-                    // バグ修正(7): 以前は重複チェックなしで単純INSERTしていたため、
-                    // 同じ相手に同じ種類の申請を連投すると保留中の申請が際限なく増えていた。
-                    if (dao.pendingBetween(c, a, b, type).isNotEmpty()) {
-                        throw nekouidaga.net.familyheartplugin.service.RequestException(
-                            nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
-                        )
-                    }
-                    try {
-                        dao.create(c, a, b, type, metadata)
-                    } catch (e: Exception) {
-                        // Xerial sqlite-jdbc は UNIQUE制約違反時に SQLIntegrityConstraintViolationException を
-                        // 投げるとは限らない(バージョン依存)ため、型だけでなくSQLiteのエラーメッセージでも判定する。
-                        val isUniqueViolation = e is SQLIntegrityConstraintViolationException ||
-                            (e.message?.contains("UNIQUE constraint failed", ignoreCase = true) == true)
-                        if (isUniqueViolation) {
-                            throw nekouidaga.net.familyheartplugin.service.RequestException(
-                                nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
-                            )
-                        }
-                        throw e
-                    }
-                }
+    private val requests = ConcurrentHashMap<Long, RelationshipRequest>()
+    private val online = ConcurrentHashMap.newKeySet<UUID>()
+    private val mcids = ConcurrentHashMap<UUID, String>()
+    private val idSequence = AtomicLong(0)
+    private val lock = Any()
+
+    fun create(a: UUID, b: UUID, type: RequestType, metadata: String? = null, requesterLabel: String? = null, targetLabel: String? = null): CompletableFuture<Long> {
+        synchronized(lock) {
+            if (requesterLabel != null) mcids[a] = canonicalMcid(requesterLabel)
+            if (targetLabel != null) mcids[b] = canonicalMcid(targetLabel)
+            if (a == b) return CompletableFuture.failedFuture(IllegalArgumentException("self"))
+            if (requests.values.any { it.status == RequestStatus.PENDING || it.status == RequestStatus.PROCESSING } &&
+                requests.values.any { it.status.let { st -> st == RequestStatus.PENDING || st == RequestStatus.PROCESSING } && it.type == type &&
+                    ((it.requester == a && it.target == b) || (it.requester == b && it.target == a)) }) {
+                return CompletableFuture.failedFuture(nekouidaga.net.familyheartplugin.service.RequestException(
+                    nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
+                ))
             }
-        }, db.executor)
+            val id = idSequence.incrementAndGet()
+            val now = java.time.Instant.now()
+            requests[id] = RelationshipRequest(id, a, b, type, metadata, RequestStatus.PENDING, now, now, null)
+            requestLog.log("${type.name.lowercase()} request send from ${identity(a)} to ${identity(b)} #$id")
+            return CompletableFuture.completedFuture(id)
+        }
+    }
+
+    fun markOnline(uuid: UUID, mcid: String) {
+        online.add(uuid)
+        mcids[uuid] = canonicalMcid(mcid)
+    }
+    fun markOffline(uuid: UUID) { online.remove(uuid) }
+
+    private fun canonicalMcid(value: String): String = value.trim().ifEmpty { "unknown" }
+
+    private fun identity(uuid: UUID): String {
+        val mcid = mcids[uuid] ?: Bukkit.getPlayer(uuid)?.name?.let(::canonicalMcid) ?: "unknown"
+        return "$mcid($uuid)"
+    }
 
     fun findMcid(mcid: String): CompletableFuture<UUID?> = CompletableFuture.supplyAsync({
         db.connection().use { c -> players.byMcid(c, mcid) }
     }, db.executor)
 
-    fun get(id: Long): CompletableFuture<RelationshipRequest?> = CompletableFuture.supplyAsync({
-        db.connection().use { c -> dao.byId(c, id) }
-    }, db.executor)
+    fun mcid(uuid: UUID): CompletableFuture<String?> {
+        mcids[uuid]?.let { return CompletableFuture.completedFuture(it) }
+        Bukkit.getPlayer(uuid)?.name?.let { name ->
+            val value = canonicalMcid(name)
+            mcids[uuid] = value
+            return CompletableFuture.completedFuture(value)
+        }
+        return CompletableFuture.supplyAsync({ db.connection().use { c -> players.mcidByUuid(c, uuid) } }, db.executor)
+            .thenApply { value -> value?.also { mcids[uuid] = it } }
+    }
 
-    fun pending(u: UUID): CompletableFuture<List<RelationshipRequest>> = CompletableFuture.supplyAsync({
-        db.connection().use { c -> dao.pendingFor(c, u) }
-    }, db.executor)
+    fun pending(u: UUID): CompletableFuture<List<RelationshipRequest>> = CompletableFuture.completedFuture(
+        synchronized(lock) { requests.values.filter { it.target == u && it.status == RequestStatus.PENDING }.sortedByDescending { it.id } }
+    )
 
-    /** GUI等、Serviceの外からも承認コストを参照できるようにする公開ラッパー。 */
+    fun get(id: Long): CompletableFuture<RelationshipRequest?> = CompletableFuture.completedFuture(requests[id]?.takeIf { it.status != RequestStatus.EXPIRED && it.status != RequestStatus.CANCELLED })
+
+    fun latestPending(u: UUID): CompletableFuture<RelationshipRequest?> = CompletableFuture.completedFuture(
+        synchronized(lock) { requests.values.filter { it.target == u && it.status == RequestStatus.PENDING }.maxByOrNull { it.id } }
+    )
+
+    fun latestPendingMarriage(u: UUID): CompletableFuture<RelationshipRequest?> = CompletableFuture.completedFuture(
+        synchronized(lock) { requests.values.filter { it.target == u && it.type == RequestType.MARRY && it.status == RequestStatus.PENDING }.maxByOrNull { it.id } }
+    )
+
     fun cost(type: RequestType): Double = acceptanceCost(type)
 
-    private fun acceptanceCost(type: RequestType): Double {
-        val key = when (type) {
-            RequestType.MARRY -> "marriage"
-            RequestType.DIVORCE -> "divorce"
-            RequestType.CHILD_PARENT -> "child"
-            RequestType.SEPARATION -> "separation"
-            RequestType.SKINSHIP -> return 0.0
-        }
-        return if (settings.econEnabled()) settings.cost(key).coerceAtLeast(0.0) else 0.0
+    private fun acceptanceCost(type: RequestType): Double = when (type) {
+        RequestType.MARRY -> if (settings.econEnabled()) settings.cost("marriage").coerceAtLeast(0.0) else 0.0
+        RequestType.DIVORCE -> if (settings.econEnabled()) settings.cost("divorce").coerceAtLeast(0.0) else 0.0
+        RequestType.CHILD_PARENT -> if (settings.econEnabled()) settings.cost("child").coerceAtLeast(0.0) else 0.0
+        RequestType.SEPARATION -> if (settings.econEnabled()) settings.cost("separation").coerceAtLeast(0.0) else 0.0
+        RequestType.SKINSHIP -> 0.0
     }
 
-    fun cancelFor(u: UUID): CompletableFuture<List<RelationshipRequest>> = CompletableFuture.supplyAsync({
-        db.connection().use { c ->
-            c.tx {
-                val requests: List<RelationshipRequest> = dao.pendingInvolving(c, u)
-                requests.forEach { request -> dao.update(c, request.id, RequestStatus.CANCELLED) }
-                requests
+    fun cancelFor(u: UUID): CompletableFuture<List<RelationshipRequest>> {
+        val cancelled = synchronized(lock) {
+            requests.values.filter { it.status == RequestStatus.PENDING && (it.requester == u || it.target == u) }.also { list ->
+                list.forEach { it.status = RequestStatus.CANCELLED; it.updatedAt = java.time.Instant.now(); requests.remove(it.id) }
             }
         }
-    }, db.executor)
+        cancelled.forEach { requestLog.log("${it.type.name.lowercase()} request cancel by disconnect ${identity(u)} #${it.id}") }
+        return CompletableFuture.completedFuture(cancelled)
+    }
 
-    /** Atomically claims any pending acceptance so concurrent clicks cannot double-process or double-charge. */
-    fun claimAcceptance(actor: UUID, id: Long): CompletableFuture<RelationshipRequest> = CompletableFuture.supplyAsync({
-        db.connection().use { c -> rel.withMutationLock {
-            c.tx {
-                val request = dao.byId(c, id, true) ?: throw IllegalArgumentException("request")
-                if (request.target != actor || request.status != RequestStatus.PENDING) throw IllegalStateException("invalid")
-                dao.update(c, id, RequestStatus.PROCESSING)
-                request.copy(status = RequestStatus.PROCESSING, processingGuard = null)
+    fun claimAcceptance(actor: UUID, id: Long, actorLabel: String? = null): CompletableFuture<RelationshipRequest> {
+        synchronized(lock) {
+            val request = requests[id] ?: return CompletableFuture.failedFuture(IllegalArgumentException("request"))
+            if (request.target != actor || request.status != RequestStatus.PENDING) {
+                return CompletableFuture.failedFuture(IllegalStateException("invalid"))
             }
-        } }
-    }, db.executor)
+            request.status = RequestStatus.PROCESSING
+            request.updatedAt = java.time.Instant.now()
+            if (actorLabel != null) mcids[actor] = canonicalMcid(actorLabel)
+            requestLog.log("${request.type.name.lowercase()} request processing by ${identity(actor)} #$id")
+            return CompletableFuture.completedFuture(request)
+        }
+    }
 
-    fun acceptSkinshipAfterAction(actor: UUID, id: Long): CompletableFuture<RelationshipRequest> = CompletableFuture.supplyAsync({
-        db.connection().use { c -> rel.withMutationLock {
-            c.tx {
-                val request = dao.byId(c, id, true) ?: throw IllegalArgumentException("request")
-                if (request.target != actor || request.status != RequestStatus.PROCESSING || request.type != RequestType.SKINSHIP || request.processingGuard != RequestProcessingGuard.SKINSHIP_EXECUTED) {
-                    throw IllegalStateException("invalid")
-                }
-                dao.update(c, id, RequestStatus.ACCEPTED)
-                request
+    fun setProcessingGuard(actor: UUID, id: Long, guard: RequestProcessingGuard): CompletableFuture<Boolean> = CompletableFuture.completedFuture(
+        synchronized(lock) {
+            val r = requests[id]
+            if (r == null || r.target != actor || r.status != RequestStatus.PROCESSING) false
+            else { r.processingGuard = guard; r.updatedAt = java.time.Instant.now(); true }
+        }
+    )
+
+    fun releaseProcessing(actor: UUID, id: Long): CompletableFuture<Boolean> = CompletableFuture.completedFuture(
+        synchronized(lock) {
+            val r = requests[id]
+            if (r == null || r.target != actor || r.status != RequestStatus.PROCESSING) false
+            else { r.status = RequestStatus.PENDING; r.processingGuard = null; r.updatedAt = java.time.Instant.now(); requestLog.log("${r.type.name.lowercase()} request returned to pending #$id"); true }
+        }
+    )
+
+    fun acceptSkinshipAfterAction(actor: UUID, id: Long, actorLabel: String? = null): CompletableFuture<RelationshipRequest> {
+        synchronized(lock) {
+            val r = requests[id] ?: return CompletableFuture.failedFuture(IllegalArgumentException("request"))
+            if (r.target != actor || r.status != RequestStatus.PROCESSING || r.type != RequestType.SKINSHIP) {
+                return CompletableFuture.failedFuture(IllegalStateException("invalid"))
             }
-        } }
-    }, db.executor)
+            r.status = RequestStatus.ACCEPTED
+            r.updatedAt = java.time.Instant.now()
+            requests.remove(id)
+            if (actorLabel != null) mcids[actor] = canonicalMcid(actorLabel)
+            requestLog.log("${r.type.name.lowercase()} request accept by ${identity(actor)} #$id")
+            return CompletableFuture.completedFuture(r)
+        }
+    }
 
-
-    fun setProcessingGuard(actor: UUID, id: Long, guard: RequestProcessingGuard): CompletableFuture<Boolean> = CompletableFuture.supplyAsync({
-        db.connection().use { c -> rel.withMutationLock {
-            c.tx {
-                val request = dao.byId(c, id, true) ?: return@tx false
-                if (request.target != actor || request.status != RequestStatus.PROCESSING) return@tx false
-                dao.setProcessingGuard(c, id, guard)
-                true
+    fun decide(actor: UUID, id: Long, accept: Boolean, acceptedSpouseRole: SpouseRole? = null, actorLabel: String? = null): CompletableFuture<RelationshipRequest> {
+        val initial = requests[id]
+        if (initial == null) return CompletableFuture.failedFuture(IllegalArgumentException("request"))
+        if (initial.target != actor || initial.status != RequestStatus.PENDING) return CompletableFuture.failedFuture(IllegalStateException("invalid"))
+        if (initial.type == RequestType.MARRY && acceptedSpouseRole == null && accept) return CompletableFuture.failedFuture(IllegalArgumentException("marriage-role-required"))
+        if (initial.type != RequestType.MARRY && acceptedSpouseRole != null) return CompletableFuture.failedFuture(IllegalArgumentException("spouse-role-not-applicable"))
+        if (initial.type == RequestType.SKINSHIP && accept) return CompletableFuture.failedFuture(IllegalStateException("skinship-use-acceptSkinshipAfterAction"))
+        if (!accept) {
+            synchronized(lock) {
+                val r = requests.remove(id) ?: return CompletableFuture.failedFuture(IllegalArgumentException("request"))
+                if (r.target != actor || r.status != RequestStatus.PENDING) { requests[id] = r; return CompletableFuture.failedFuture(IllegalStateException("invalid")) }
+                r.status = RequestStatus.DENIED; r.updatedAt = java.time.Instant.now()
+                requestLog.log("${r.type.name.lowercase()} request deny by ${identity(actor)} #$id")
+                return CompletableFuture.completedFuture(r)
             }
-        } }
-    }, db.executor)
-
-    fun releaseProcessing(actor: UUID, id: Long): CompletableFuture<Boolean> = CompletableFuture.supplyAsync({
-        db.connection().use { c -> rel.withMutationLock {
-            c.tx {
-                val request = dao.byId(c, id, true) ?: return@tx false
-                if (request.target != actor || request.status != RequestStatus.PROCESSING) return@tx false
-                dao.update(c, id, RequestStatus.PENDING)
-                true
-            }
-        } }
-    }, db.executor)
-
-    fun decide(
-        actor: UUID,
-        id: Long,
-        accept: Boolean,
-        acceptedSpouseRole: SpouseRole? = null
-    ): CompletableFuture<RelationshipRequest> {
-        return CompletableFuture.supplyAsync({ db.connection().use { c -> dao.byId(c, id) } }, db.executor)
-            .thenCompose { initial ->
-                if (initial == null) return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalArgumentException("request"))
-                if (initial.target != actor || initial.status != RequestStatus.PENDING) {
-                    return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("invalid"))
-                }
-                if (!accept) return@thenCompose completeDecision(actor, id, false, acceptedSpouseRole)
-                if (initial.type == RequestType.SKINSHIP) {
-                    return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("skinship-use-acceptSkinshipAfterAction"))
-                }
-                claimAcceptance(actor, id).thenCompose { claimed ->
-                    val cost = acceptanceCost(claimed.type)
-                    if (cost <= 0.0) {
-                        completeDecision(actor, id, true, acceptedSpouseRole)
-                    } else if (!economy.available()) {
-                        releaseProcessing(actor, id)
-                            .thenCompose { CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("economy.insufficient")) }
+        }
+        return claimAcceptance(actor, id, null).thenCompose { claimed ->
+            val cost = acceptanceCost(claimed.type)
+            if (cost <= 0.0) {
+                completeDecision(actor, claimed, acceptedSpouseRole, actorLabel).handle { result, error ->
+                    if (error == null) {
+                        CompletableFuture.completedFuture(result)
                     } else {
-                        economy.offlinePlayerAsync(claimed.requester).thenCompose { player: org.bukkit.OfflinePlayer ->
-                            setProcessingGuard(actor, id, RequestProcessingGuard.ECONOMY_INTENT).thenCompose { guarded ->
-                                if (!guarded) return@thenCompose CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("request.guard-failed"))
-                                economy.canChargeAsync(player, cost).thenCompose { hasFunds ->
-                                    if (!hasFunds) {
-                                        releaseProcessing(actor, id).thenCompose { CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("economy.insufficient")) }
-                                    } else economy.chargeAsync(player, cost).thenCompose { charged ->
-                                        if (!charged) {
-                                            releaseProcessing(actor, id).thenCompose { CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("economy.charge-failed")) }
-                                        } else {
-                                            setProcessingGuard(actor, id, RequestProcessingGuard.ECONOMY_CHARGED).thenCompose { chargedGuarded ->
-                                                if (!chargedGuarded) {
-                                                    // The money moved but the durable marker did not; never auto-retry.
-                                                    CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("economy.reconciliation-required"))
-                                                } else completeDecision(actor, id, true, acceptedSpouseRole)
-                                            }.handle { result, error ->
-                                                if (error == null) CompletableFuture.completedFuture(result)
-                                                else economy.refundAsync(player, cost).thenCompose { refunded ->
-                                                    if (!refunded) {
-                                                        Bukkit.getLogger().severe("[FamilyHeart] Economy refund failed for request $id; request is intentionally kept in PROCESSING for manual reconciliation: ${error.message}")
-                                                        CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("economy.refund-failed", error))
-                                                    } else releaseProcessing(actor, id).thenCompose {
-                                                        CompletableFuture.failedFuture<RelationshipRequest>(error)
-                                                    }
-                                                }
-                                            }.thenCompose { it }
-                                        }
-                                    }
+                        releaseProcessing(actor, id).thenCompose {
+                            CompletableFuture.failedFuture<RelationshipRequest>(error)
+                        }
+                    }
+                }.thenCompose { it }
+            } else if (!economy.available()) {
+                releaseProcessing(actor, id).thenCompose { CompletableFuture.failedFuture(IllegalStateException("economy.insufficient")) }
+            } else economy.canChargeAsync(claimed.requester, cost).thenCompose { hasFunds ->
+                if (!hasFunds) releaseProcessing(actor, id).thenCompose { CompletableFuture.failedFuture(IllegalStateException("economy.insufficient")) }
+                else economy.chargeAsync(claimed.requester, cost).thenCompose { charged ->
+                    if (!charged) releaseProcessing(actor, id).thenCompose { CompletableFuture.failedFuture(IllegalStateException("economy.charge-failed")) }
+                    else {
+                        setProcessingGuard(actor, id, RequestProcessingGuard.ECONOMY_CHARGED).thenCompose { guarded ->
+                            if (!guarded) economy.refundAsync(claimed.requester, cost).thenCompose { releaseProcessing(actor, id) }.thenCompose { CompletableFuture.failedFuture(IllegalStateException("request.guard-failed")) }
+                            else completeDecision(actor, claimed, acceptedSpouseRole, actorLabel).handle { result, error ->
+                                if (error == null) CompletableFuture.completedFuture(result)
+                                else economy.refundAsync(claimed.requester, cost).thenCompose { refunded ->
+                                    if (!refunded) {
+                                        Bukkit.getLogger().severe("[FamilyHeart] Economy refund failed for transient request $id; manual reconciliation required")
+                                        CompletableFuture.failedFuture<RelationshipRequest>(IllegalStateException("economy.refund-failed", error))
+                                    } else releaseProcessing(actor, id).thenCompose { CompletableFuture.failedFuture<RelationshipRequest>(error) }
                                 }
-                            }
+                            }.thenCompose { it }
                         }
                     }
                 }
             }
+        }
     }
 
-    private fun completeDecision(
-        actor: UUID,
-        id: Long,
-        accept: Boolean,
-        acceptedSpouseRole: SpouseRole?
-    ): CompletableFuture<RelationshipRequest> = CompletableFuture.supplyAsync({
+    private fun completeDecision(actor: UUID, request: RelationshipRequest, acceptedSpouseRole: SpouseRole?, actorLabel: String? = null): CompletableFuture<RelationshipRequest> = CompletableFuture.supplyAsync({
+        synchronized(lock) {
+            val live = requests[request.id] ?: throw IllegalArgumentException("request")
+            if (live.target != actor || live.status != RequestStatus.PROCESSING) throw IllegalStateException("invalid")
+            if (!online.contains(live.target)) throw IllegalStateException("offline")
+        }
         db.connection().use { c ->
             rel.withMutationLock {
-                var affected = emptySet<UUID>()
-                try {
-                    val result = c.tx {
-                        val request = dao.byId(c, id, true) ?: throw IllegalArgumentException("request")
-                        if (request.target != actor || request.status != if (accept) RequestStatus.PROCESSING else RequestStatus.PENDING) throw IllegalStateException("invalid")
-                        if (!accept) {
-                            dao.update(c, id, RequestStatus.DENIED)
-                            return@tx request
+                val (result, affected) = c.tx {
+                    when (request.type) {
+                        RequestType.MARRY -> {
+                            val requesterRole = runCatching { SpouseRole.valueOf(request.metadata ?: error("marriage role missing")) }.getOrElse { throw IllegalStateException("invalid requester role") }
+                            val targetRole = acceptedSpouseRole ?: throw IllegalArgumentException("marriage-role-required")
+                            // Same-sex marriage is supported. WIFE/WIFE and HUSBAND/HUSBAND are valid role combinations;
+                            // SpouseRole is a relationship-role label and is not a gender restriction.
+                            rel.createWithinTransaction(c, request.requester, request.target, RelationshipType.SPOUSE, requesterRole.name, targetRole.name).let { it.first to it.second }
                         }
-                        if (request.type == RequestType.SKINSHIP) throw IllegalStateException("skinship-use-acceptSkinshipAfterAction")
-                        affected = when (request.type) {
-                            RequestType.MARRY -> {
-                                val requesterRole = runCatching { SpouseRole.valueOf(request.metadata ?: error("marriage role missing")) }.getOrElse { throw IllegalStateException("invalid requester role") }
-                                val targetRole = acceptedSpouseRole ?: throw IllegalArgumentException("/fh accept {husband|wife}")
-                                if (requesterRole == targetRole) throw IllegalArgumentException("marriage.same-role")
-                                rel.createWithinTransaction(c, request.requester, request.target, RelationshipType.SPOUSE, requesterRole.name, targetRole.name).second
-                            }
-                            RequestType.CHILD_PARENT -> {
-                                val requesterRole = runCatching { ParentChildRole.valueOf(request.metadata ?: error("child role missing")) }.getOrElse { throw IllegalStateException("invalid requester role") }
-                                if (requesterRole == ParentChildRole.PARENT)
-                                    rel.createWithinTransaction(c, request.requester, request.target, RelationshipType.PARENT_CHILD, ParentChildRole.PARENT.name, ParentChildRole.CHILD.name).second
-                                else
-                                    rel.createWithinTransaction(c, request.target, request.requester, RelationshipType.PARENT_CHILD, ParentChildRole.PARENT.name, ParentChildRole.CHILD.name).second
-                            }
-                            RequestType.DIVORCE -> rel.removeWithinTransaction(c, request.requester, request.target, RelationshipType.SPOUSE)
-                            RequestType.SEPARATION -> rel.removeWithinTransaction(c, request.requester, request.target, RelationshipType.PARENT_CHILD)
-                            RequestType.SKINSHIP -> emptySet()
+                        RequestType.CHILD_PARENT -> {
+                            val requesterRole = runCatching { ParentChildRole.valueOf(request.metadata ?: error("child role missing")) }.getOrElse { throw IllegalStateException("invalid requester role") }
+                            if (requesterRole == ParentChildRole.PARENT) rel.createWithinTransaction(c, request.requester, request.target, RelationshipType.PARENT_CHILD, ParentChildRole.PARENT.name, ParentChildRole.CHILD.name).let { it.first to it.second }
+                            else rel.createWithinTransaction(c, request.target, request.requester, RelationshipType.PARENT_CHILD, ParentChildRole.PARENT.name, ParentChildRole.CHILD.name).let { it.first to it.second }
                         }
-                        dao.update(c, id, RequestStatus.ACCEPTED)
-                        request
+                        RequestType.DIVORCE -> null to rel.removeWithinTransaction(c, request.requester, request.target, RelationshipType.SPOUSE)
+                        RequestType.SEPARATION -> null to rel.removeWithinTransaction(c, request.requester, request.target, RelationshipType.PARENT_CHILD)
+                        RequestType.SKINSHIP -> throw IllegalStateException("skinship-use-acceptSkinshipAfterAction")
                     }
-                    // The transaction has committed here. Only now publish cache changes.
-                    if (affected.isNotEmpty()) rel.refreshAffected(c, affected)
-                    result
-                } catch (e: Exception) {
-                    // Economy charging happens outside the DB transaction; caller handles asynchronous refund.
-                    throw e
+                }
+                rel.refreshAffected(c, affected)
+                synchronized(lock) {
+                    val live = requests.remove(request.id) ?: throw IllegalStateException("request")
+                    live.status = RequestStatus.ACCEPTED
+                    live.updatedAt = java.time.Instant.now()
+                    live.processingGuard = null
+                    requestLog.log("${live.type.name.lowercase()} request accept by ${identity(actor)} #${live.id}")
+                    live
                 }
             }
         }
-    }, db.executor)
+    })
 
-    fun findLatestPendingMarriage(target: UUID): CompletableFuture<RelationshipRequest?> =
-        pending(target).thenApply { requests -> requests.firstOrNull { it.type == RequestType.MARRY } }
+    fun findLatestPendingMarriage(target: UUID): CompletableFuture<RelationshipRequest?> = latestPendingMarriage(target)
 
-    fun recoverProcessing(): CompletableFuture<Int> = CompletableFuture.supplyAsync({
-        db.connection().use { c ->
-            c.prepareStatement("SELECT COUNT(*) FROM requests WHERE status='PROCESSING' AND updated_at < datetime('now','-2 minutes')").use { q ->
-                val count = q.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
-                dao.recoverProcessing(c)
-                count
+    fun recoverEconomyCharged(): CompletableFuture<Int> = CompletableFuture.completedFuture(0)
+    fun recoverProcessing(): CompletableFuture<Int> = CompletableFuture.completedFuture(0)
+
+    // バグ修正(監査): messages.yml の request.expired は定義済みだが、以前はこの関数が
+    // ログ出力のみ行い、戻り値も無いため呼び出し元(FamilyHeartPlugin.onEnable の定期タスク)
+    // には期限切れになった申請が一切伝わらず、当事者への通知が不可能だった。
+    // 期限切れになったRequestの一覧を返し、通知は呼び出し元(Messagesを持つ側)に委ねる。
+    fun expireAll(): List<RelationshipRequest> {
+        val now = java.time.Instant.now()
+        val expired = synchronized(lock) {
+            requests.values.filter { it.status == RequestStatus.PENDING && now.epochSecond - it.createdAt.epochSecond >= settings.requestExpireSeconds() }.also { list ->
+                list.forEach { it.status = RequestStatus.EXPIRED; it.updatedAt = now; requests.remove(it.id) }
             }
         }
-    }, db.executor)
-
-    fun expireAll() {
-        if (!expirationRunning.compareAndSet(false, true)) return
-        db.executor.submit {
-            try {
-                db.connection().use { c ->
-                    c.prepareStatement(
-                        "UPDATE requests SET status='EXPIRED',updated_at=CURRENT_TIMESTAMP,pending_key=NULL " +
-                            "WHERE status='PENDING' AND created_at < datetime('now','-10 minutes')"
-                    ).use { st -> st.executeUpdate() }
-                }
-            } finally {
-                expirationRunning.set(false)
-            }
-        }
+        expired.forEach { requestLog.log("${it.type.name.lowercase()} request expire between ${identity(it.requester)} and ${identity(it.target)} #${it.id}") }
+        return expired
     }
+
+    fun shutdown() { requestLog.shutdown() }
 }

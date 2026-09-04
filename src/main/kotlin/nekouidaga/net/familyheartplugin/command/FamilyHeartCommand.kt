@@ -11,6 +11,7 @@ import nekouidaga.net.familyheartplugin.model.*
 import nekouidaga.net.familyheartplugin.penalty.PenaltyService
 import nekouidaga.net.familyheartplugin.relationship.RelationshipService
 import nekouidaga.net.familyheartplugin.request.RequestService
+import nekouidaga.net.familyheartplugin.service.messageKey
 import org.bukkit.Bukkit
 import org.bukkit.command.Command
 import org.bukkit.command.CommandExecutor
@@ -18,6 +19,7 @@ import org.bukkit.command.CommandSender
 import org.bukkit.command.TabCompleter
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
+import java.util.concurrent.CompletableFuture
 
 class FamilyHeartCommand(
     private val p: JavaPlugin,
@@ -38,25 +40,42 @@ class FamilyHeartCommand(
         s.sendMessage(msg.get(key, vars))
     }
 
-    private fun target(pl: Player, args: List<String>, index: Int = 1): Player? =
-        if (args.size > index) Bukkit.getPlayerExact(args[index])
-        else Bukkit.getOnlinePlayers()
-            .filter { it != pl && it.world.uid == pl.world.uid }
-            .minByOrNull { it.location.distanceSquared(pl.location) }
+    private fun target(pl: Player, args: List<String>, index: Int = 1): Player? {
+        if (args.size <= index) {
+            return Bukkit.getOnlinePlayers()
+                .filter { it != pl && it.world.uid == pl.world.uid }
+                .minByOrNull { it.location.distanceSquared(pl.location) }
+        }
+        val requested = args[index].trim()
+        if (requested.isEmpty()) return null
+        // MCIDは原文を保持する。FloodgateのBedrock名は".MCID"として
+        // Bukkit/Paper側にも見えるため、ドットを除去・追加せず、そのまま照合する。
+        return Bukkit.getOnlinePlayers().firstOrNull { online ->
+            online != pl && online.name.equals(requested, ignoreCase = true)
+        }
+    }
+
+    private fun requestMessageKey(type: RequestType, phase: String, meta: String?): String = msg.requestKey(type, phase, meta)
+
+    private fun requestMessage(player: Player, key: String, vars: Map<String, String>) {
+        player.sendMessage(msg.get(key, vars))
+    }
 
     private fun request(pl: Player, target: Player, type: RequestType, meta: String? = null) {
-        req.create(pl.uniqueId, target.uniqueId, type, meta)
+        req.create(pl.uniqueId, target.uniqueId, type, meta, pl.name, target.name)
             .thenAccept { id ->
                 Bukkit.getScheduler().runTask(p, Runnable {
-                    send(pl, "request.created", mapOf("request_id" to id.toString()))
-                    send(target, "request.received", mapOf("player" to pl.name, "request_id" to id.toString()))
+                    val vars = mapOf("request_id" to id.toString(), "player" to pl.name, "target" to target.name, "role" to (meta?.lowercase() ?: ""))
+                    requestMessage(pl, requestMessageKey(type, "sent", meta), vars)
+                    requestMessage(target, requestMessageKey(type, "received", meta), vars)
                 })
             }
             .exceptionally { ex ->
+                val cause = ex.cause ?: ex
+                p.logger.warning("[FamilyHeart] Request create failed: type=$type, requester=${pl.uniqueId}, target=${target.uniqueId}, cause=${cause.javaClass.name}: ${cause.message}")
                 Bukkit.getScheduler().runTask(p, Runnable {
                     // バグ修正(7): 以前は重複申請チェックが無く、常にdatabase-errorとして
                     // 一括りにしていた。RequestException(DUPLICATE_PENDING)は専用メッセージにする。
-                    val cause = ex.cause ?: ex
                     if (cause is nekouidaga.net.familyheartplugin.service.RequestException &&
                         cause.error == nekouidaga.net.familyheartplugin.service.RequestError.DUPLICATE_PENDING
                     ) {
@@ -84,7 +103,7 @@ class FamilyHeartCommand(
         }
 
         when (args[0].lowercase()) {
-            "family" -> if (ok(s, "familyheart.family")) gui.openFamily(s)
+            "family" -> if (ok(s, "familyheart.family")) gui.openFamily(s) else send(s, "general.no-permission")
             "requests" -> {
                 if (!ok(s, "familyheart.requests")) {
                     send(s, "general.no-permission")
@@ -92,8 +111,8 @@ class FamilyHeartCommand(
                 }
                 // Backward-compatible command path: /fh requests accept [id] [wife|husband]
                 // The primary command remains /fh accept [id] [wife|husband].
-                if (args.size >= 2 && args[1].equals("accept", ignoreCase = true)) {
-                    val forwarded = arrayOf("accept", *args.drop(2).toTypedArray())
+                if (args.size >= 2 && (args[1].equals("accept", ignoreCase = true) || args[1].equals("deny", ignoreCase = true))) {
+                    val forwarded = arrayOf(args[1].lowercase(), *args.drop(2).toTypedArray())
                     return onCommand(s, c, label, forwarded)
                 }
                 gui.openRequests(s)
@@ -128,47 +147,63 @@ class FamilyHeartCommand(
                     return true
                 }
 
-                // /fh accept                         -> 最新の保留中申請を承認
-                // /fh accept <requestId>            -> 指定申請を承認
-                // /fh accept husband|wife           -> 最新の結婚申請を指定役割で承認
-                // /fh accept <requestId> husband|wife -> 指定結婚申請を指定役割で承認
+                // /fh accept
+                //   -> 最新のPENDING申請を承認
+                // /fh accept <id>
+                //   -> 指定PENDING申請を承認
+                // /fh accept wife|husband
+                //   -> 最新のMARRY申請を指定役割で承認
+                // /fh accept <id> wife|husband
+                //   -> 指定MARRY申請を指定役割で承認
                 val first = args.getOrNull(1)
                 val second = args.getOrNull(2)
-                val role = sequenceOf(first, second)
-                    .filterNotNull()
-                    .mapNotNull { it.uppercase().let { value -> runCatching { SpouseRole.valueOf(value) }.getOrNull() } }
-                    .firstOrNull()
+                val parsedRole = listOfNotNull(first, second).firstNotNullOfOrNull { token ->
+                    runCatching { SpouseRole.valueOf(token.uppercase()) }.getOrNull()
+                }
                 val requestId = first?.toLongOrNull()
 
+                if (args.size > 3 || (first != null && second != null && requestId == null) ||
+                    (first != null && requestId == null && parsedRole == null)) {
+                    send(s, "general.invalid-input")
+                    return true
+                }
+
                 fun complete(request: RelationshipRequest) {
-                    if (request.type == RequestType.MARRY && role == null) {
+                    if (request.target != s.uniqueId || request.status != RequestStatus.PENDING) {
+                        send(s, "relationship.not-found")
+                        return
+                    }
+                    if (request.type == RequestType.MARRY && parsedRole == null) {
                         send(s, "request.marriage-role-required")
                         return
                     }
-                    if (request.type != RequestType.MARRY && role != null) {
+                    if (request.type != RequestType.MARRY && parsedRole != null) {
                         send(s, "general.invalid-input")
                         return
                     }
-                    // バグ修正: 以前はSKINSHIP種別のRequestもここでreq.decide()に渡していたが、
-                    // decide()はSKINSHIPを常に拒否する設計(GUI側のacceptSkinshipAfterAction経由でしか
-                    // 完了できない)ため、/fh accept でスキンシップ申請を承認しようとすると
-                    // 常にgeneral.database-errorになっていた。GUIと共通のacceptSkinship処理を呼ぶ。
+
                     if (request.type == RequestType.SKINSHIP) {
-                        gui.acceptSkinship(s, request) { send(s, "request.accepted") }
+                        gui.acceptSkinship(s, request) {
+                            s.sendMessage(msg.request(request.type, "accepted", request.metadata, mapOf("request_id" to request.id.toString(), "player" to s.name, "target" to s.name)))
+                        }
                         return
                     }
-                    req.decide(s.uniqueId, request.id, true, role)
+                    req.decide(s.uniqueId, request.id, true, parsedRole, s.name)
                         .thenAccept { result ->
                             Bukkit.getScheduler().runTask(p, Runnable {
-                                send(s, "request.accepted")
-                                Bukkit.getPlayer(result.requester)?.let { requester ->
-                                    requester.sendMessage(msg.get("request.accepted"))
-                                }
+                                val vars = mapOf("request_id" to request.id.toString(), "player" to s.name, "target" to s.name)
+                                s.sendMessage(msg.request(request.type, "accepted", request.metadata, vars))
+                                Bukkit.getPlayer(result.requester)?.sendMessage(msg.request(request.type, "accepted", request.metadata, vars))
                             })
                         }
                         .exceptionally { ex ->
+                            val cause = ex.cause ?: ex
+                            p.logger.warning("[FamilyHeart] Request accept failed: id=${request.id}, type=${request.type}, actor=${s.uniqueId}, cause=${cause.javaClass.name}: ${cause.message}")
                             Bukkit.getScheduler().runTask(p, Runnable {
-                                val cause = ex.cause ?: ex
+                                if (cause is nekouidaga.net.familyheartplugin.service.RelationshipException) {
+                                    send(s, cause.error.messageKey())
+                                    return@Runnable
+                                }
                                 when (cause.message) {
                                     "economy.insufficient" -> {
                                         val costKey = when (request.type) {
@@ -181,7 +216,9 @@ class FamilyHeartCommand(
                                         send(s, "economy.insufficient-funds", mapOf("cost" to settings.cost(costKey).toString()))
                                     }
                                     "economy.charge-failed" -> send(s, "economy.unavailable")
-                                    "marriage.same-role" -> send(s, "request.marriage-same-role")
+                                    "marriage-role-required" -> send(s, "request.marriage-role-required")
+                                    "spouse-role-not-applicable" -> send(s, "general.invalid-input")
+                                    "invalid" -> send(s, "relationship.not-found")
                                     else -> send(s, "general.database-error")
                                 }
                             })
@@ -189,33 +226,80 @@ class FamilyHeartCommand(
                         }
                 }
 
-                if (requestId != null && second != null && role == null) {
+                when {
+                    requestId != null -> {
+                        if (second != null && parsedRole == null) {
+                            send(s, "general.invalid-input")
+                            return true
+                        }
+                        req.get(requestId).thenAccept { request ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                if (request == null) send(s, "request.not-found") else complete(request)
+                            })
+                        }.exceptionally { ex ->
+                            p.logger.warning("[FamilyHeart] Request lookup failed for id=$requestId: ${ex.message}")
+                            Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                            null
+                        }
+                    }
+                    parsedRole != null -> {
+                        req.latestPendingMarriage(s.uniqueId).thenAccept { request ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                if (request == null) send(s, "request.not-found") else complete(request)
+                            })
+                        }.exceptionally { ex ->
+                            p.logger.warning("[FamilyHeart] Latest marriage request lookup failed: ${ex.message}")
+                            Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                            null
+                        }
+                    }
+                    else -> {
+                        req.latestPending(s.uniqueId).thenAccept { request ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                if (request == null) send(s, "request.not-found") else complete(request)
+                            })
+                        }.exceptionally { ex ->
+                            p.logger.warning("[FamilyHeart] Latest request lookup failed: ${ex.message}")
+                            Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                            null
+                        }
+                    }
+                }
+            }
+
+            "deny" -> {
+                if (!ok(s, "familyheart.requests")) {
+                    send(s, "general.no-permission")
+                    return true
+                }
+                val id = args.getOrNull(1)?.toLongOrNull()
+                if (args.size > 2 || (args.size == 2 && id == null)) {
                     send(s, "general.invalid-input")
-                } else if (requestId != null) {
-                    req.get(requestId).thenAccept { request ->
-                        Bukkit.getScheduler().runTask(p, Runnable {
-                            if (request == null || request.target != s.uniqueId || request.status != RequestStatus.PENDING) {
-                                send(s, "relationship.not-found")
-                            } else complete(request)
-                        })
-                    }
-                } else if (first != null && role == null) {
-                    send(s, "general.invalid-input")
-                } else if (role != null) {
-                    // A role-only acceptance is explicitly a marriage selection; never
-                    // accidentally apply the role to the newest non-marriage request.
-                    req.findLatestPendingMarriage(s.uniqueId).thenAccept { request ->
-                        Bukkit.getScheduler().runTask(p, Runnable {
-                            if (request == null) send(s, "relationship.not-found") else complete(request)
-                        })
-                    }
-                } else {
-                    req.pending(s.uniqueId).thenAccept { requests ->
-                        val request = requests.firstOrNull()
-                        Bukkit.getScheduler().runTask(p, Runnable {
-                            if (request == null) send(s, "relationship.not-found") else complete(request)
-                        })
-                    }
+                    return true
+                }
+                val future = if (id != null) req.get(id) else req.latestPending(s.uniqueId)
+                future.thenAccept { request ->
+                    Bukkit.getScheduler().runTask(p, Runnable {
+                        if (request == null || request.target != s.uniqueId || request.status != RequestStatus.PENDING) {
+                            send(s, "request.not-found")
+                            return@Runnable
+                        }
+                        req.decide(s.uniqueId, request.id, false).thenAccept { result ->
+                            Bukkit.getScheduler().runTask(p, Runnable {
+                                val vars = mapOf("request_id" to result.id.toString(), "player" to s.name, "target" to s.name)
+                                s.sendMessage(msg.request(result.type, "denied", result.metadata, vars))
+                                Bukkit.getPlayer(result.requester)?.sendMessage(msg.request(result.type, "denied", result.metadata, vars))
+                            })
+                        }.exceptionally { ex ->
+                            p.logger.warning("[FamilyHeart] Request deny failed: id=${request.id}, cause=${ex.message}")
+                            Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                            null
+                        }
+                    })
+                }.exceptionally { ex ->
+                    p.logger.warning("[FamilyHeart] Request lookup failed for deny: ${ex.message}")
+                    Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") })
+                    null
                 }
             }
 
@@ -293,18 +377,45 @@ class FamilyHeartCommand(
                     send(s, "general.no-target")
                     return true
                 }
-                val r = act.execute(s, t, args[0].lowercase()) { id ->
-                    send(s, "request.created", mapOf("request_id" to id.toString()))
+                val action = args[0].lowercase()
+                val r = act.execute(s, t, action) { id ->
+                    s.sendMessage(msg.request(RequestType.SKINSHIP, "sent", action, mapOf(
+                        "request_id" to id.toString(),
+                        "player" to s.name,
+                        "target" to t.name
+                    )))
                 }
                 when {
                     r.success -> send(s, "action.executed", mapOf("action" to args[0]))
                     r.reason == "distance" -> send(s, "general.distance")
                     r.reason.startsWith("cooldown:") -> send(s, "action.cooldown", mapOf("duration" to r.reason.substringAfter(":")))
                     r.reason == "self" -> send(s, "relationship.self")
-                    r.reason == "approval" -> {} // 承認待ち: request.createdはonApprovalコールバックで送信済み/送信予定
+                    r.reason == "approval" -> {}
+                    r.reason == "loading" -> send(s, "general.relationship-loading")
                 }
             }
 
+            "info" -> {
+                if (!ok(s, "familyheart.info")) { send(s, "general.no-permission"); return true }
+                val first = args.getOrNull(1)
+                val childOnly = args.getOrNull(2)?.equals("child", true) == true
+                if (args.size > 3) { send(s, "general.invalid-input"); return true }
+                val targetMcid = if (first == null || first.equals("child", true)) null else first
+                val onlineTarget = targetMcid?.let { wanted -> Bukkit.getOnlinePlayers().firstOrNull { it.name.equals(wanted, ignoreCase = true) } }
+                val targetFuture = when {
+                    targetMcid == null -> CompletableFuture.completedFuture(s.uniqueId)
+                    onlineTarget != null -> CompletableFuture.completedFuture(onlineTarget.uniqueId)
+                    else -> req.findMcid(targetMcid)
+                }
+                targetFuture.thenAccept { uuid ->
+                    Bukkit.getScheduler().runTask(p, Runnable {
+                        if (uuid == null) { send(s, "general.target-not-found"); return@Runnable }
+                        if (childOnly) gui.openChildrenList(s, uuid) else gui.openInfo(s, uuid)
+                    })
+                }.exceptionally {
+                    Bukkit.getScheduler().runTask(p, Runnable { send(s, "general.database-error") }); null
+                }
+            }
             "admin" -> admin(s, args.drop(1))
             else -> send(s, "general.invalid-input")
         }
@@ -402,14 +513,18 @@ class FamilyHeartCommand(
     }
 
     override fun onTabComplete(s: CommandSender, c: Command, alias: String, args: Array<String>): List<String> = when (args.size) {
-        1 -> listOf("family", "marry", "accept", "divorce", "child", "separation", "hug", "kiss", "requests", "gui", "admin")
+        1 -> listOf("family", "marry", "accept", "deny", "divorce", "child", "separation", "hug", "kiss", "requests", "info", "gui", "admin")
             .filter { it.startsWith(args[0], true) }
         2 -> when (args[0].lowercase()) {
             "marry" -> Bukkit.getOnlinePlayers().map { it.name }
-            "accept" -> listOf("wife", "husband")
+            "accept" -> when {
+                args.size >= 2 && args[1].toLongOrNull() != null -> listOf("wife", "husband")
+                else -> listOf("wife", "husband")
+            }
             "child" -> listOf("parent", "child")
             "separation", "hug", "kiss" -> Bukkit.getOnlinePlayers().map { it.name }
             "admin" -> listOf("relation", "family", "penalty", "reload")
+            "info" -> listOf("child")
             else -> emptyList()
         }.filter { it.startsWith(args[1], true) }
         3 -> when (args[0].lowercase()) {

@@ -27,6 +27,7 @@ class PlayerConnectionListener(
     @EventHandler
     fun join(e: PlayerJoinEvent) {
         val x = e.player
+        req.markOnline(x.uniqueId, x.name)
         db.executor.submit {
             try {
                 db.connection().use { c -> players.upsert(c, x.uniqueId, x.name) }
@@ -46,6 +47,7 @@ class PlayerConnectionListener(
 
     @EventHandler
     fun quit(e: PlayerQuitEvent) {
+        req.markOffline(e.player.uniqueId)
         req.cancelFor(e.player.uniqueId).thenAccept { requests ->
             Bukkit.getScheduler().runTask(p, Runnable {
                 requests.forEach { r ->

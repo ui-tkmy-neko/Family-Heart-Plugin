@@ -3,6 +3,7 @@ package nekouidaga.net.familyheartplugin.database
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.bukkit.configuration.file.FileConfiguration
+import java.io.File
 import java.sql.Connection
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -15,7 +16,7 @@ import java.util.logging.Logger
  * concurrent readers, but only one writer at a time; serialising JDBC work here
  * avoids lock storms while all plugin-side writes remain asynchronous.
  */
-class DatabaseManager(private val log: Logger) {
+class DatabaseManager(private val log: Logger, private val dataFolder: File) {
     private lateinit var ds: HikariDataSource
     // SQLiteはHikariの単一コネクション(maximumPoolSize=1)で書き込みを直列化している。
     // ワーカースレッド数を無条件に8とすると、その全てが同時にDB処理を要求した場合、
@@ -25,7 +26,11 @@ class DatabaseManager(private val log: Logger) {
     val executor: ExecutorService get() = executorImpl
 
     fun connect(c: FileConfiguration) {
-        val file = c.getString("database.sqlite.file", "familyheart.db") ?: "familyheart.db"
+        val configured = c.getString("database.sqlite.file", "data/familyheart.db") ?: "data/familyheart.db"
+        val rawFile = File(configured)
+        val filePath = if (rawFile.isAbsolute) rawFile else File(dataFolder, configured)
+        filePath.parentFile?.mkdirs()
+        val file = filePath.path
         val busyTimeout = c.getLong("database.sqlite.busy-timeout-ms", 10_000L)
         val maximumPool = 1
         // SQLite書き込みはmaximumPool=1で直列化されるため、ワーカースレッドを増やしても
@@ -54,18 +59,24 @@ class DatabaseManager(private val log: Logger) {
 
     private fun migrateSQLiteColumns() {
         connection().use { conn ->
+            // IMPORTANT: add/normalize columns before creating indexes that reference them.
+            // Older FamilyHeart databases may lack these columns entirely.
             ensureColumn(conn, "relationships", "auto_source_relationship_id", "VARCHAR(32)")
-            ensureColumn(conn, "requests", "pending_key", "VARCHAR(160)")
-            ensureColumn(conn, "requests", "processing_guard", "VARCHAR(32)")
             ensureColumn(conn, "actions", "state", "VARCHAR(16) NOT NULL DEFAULT 'EXECUTED'")
             ensureColumn(conn, "actions", "request_id", "INTEGER")
 
-            // Existing SQLite databases are expected to have been created by this
-            // plugin, so these indexes are safe to create idempotently.
+            // Keep the newest action row when legacy request_id duplicates exist; older
+            // rows remain valid audit history but are detached from request idempotency.
+            conn.createStatement().use { st ->
+                st.executeUpdate("UPDATE actions SET request_id=NULL WHERE request_id IS NOT NULL AND id NOT IN (SELECT MAX(id) FROM actions WHERE request_id IS NOT NULL GROUP BY request_id)")
+            }
+
+            // Index creation happens only after all referenced columns exist.
             conn.createStatement().use { st ->
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_auto_source ON relationships(auto_source_relationship_id)")
-                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_request ON requests(pending_key)")
-                st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_req_expire ON requests(status,created_at)")
+                // Make the uniqueness rule apply only to live requests. This is robust even
+                // if a legacy terminal row somehow contains a stale pending_key.
+                st.executeUpdate("DROP INDEX IF EXISTS uq_pending_request")
                 st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_actions_request ON actions(request_id)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_actions_state ON actions(state)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_pen_expire ON family_penalties(active,ends_at)")
@@ -180,10 +191,8 @@ class DatabaseManager(private val log: Logger) {
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_hist ON relationship_history(relationship_id)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_req_target ON requests(target,status)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_req_processing ON requests(status,processing_guard,updated_at)")
-                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_request ON requests(pending_key)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_actions ON actions(actor,created_at)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_actions_state ON actions(state)")
-                st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS uq_actions_request ON actions(request_id)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_pen_player ON family_penalties(target_player,active)")
                 st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_pen_expire ON family_penalties(active,ends_at)")
             }
@@ -213,9 +222,8 @@ class DatabaseManager(private val log: Logger) {
                           AND NOT EXISTS (SELECT 1 FROM actions a WHERE a.request_id=requests.id AND a.state='EXECUTED')
                     """.trimIndent())
 
-                    // The legacy custom-item feature was removed. RequestType no longer contains
-                    // CUSTOM_ITEM, so old rows must not survive into RequestDao.valueOf(). Remove
-                    // their request-linked action records first, then the obsolete request rows.
+                    // CUSTOM_ITEM was removed from the plugin. Clean legacy rows before any
+                    // RequestType enum mapping occurs, otherwise old databases would fail to load.
                     st.executeUpdate("DELETE FROM actions WHERE request_id IN (SELECT id FROM requests WHERE type='CUSTOM_ITEM')")
                     st.executeUpdate("DELETE FROM requests WHERE type='CUSTOM_ITEM'")
 
@@ -231,8 +239,22 @@ class DatabaseManager(private val log: Logger) {
     }
 
     fun shutdown() {
+        // Drain already-submitted persistence jobs before closing SQLite. Clean plugin disable
+        // must not discard a DB write that was queued immediately before shutdown.
+        if (::executorImpl.isInitialized) {
+            executorImpl.shutdown()
+            try {
+                if (!executorImpl.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    executorImpl.shutdownNow()
+                    log.warning("[FamilyHeart] SQLite executor did not finish within 5 seconds; remaining DB tasks were cancelled")
+                }
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                executorImpl.shutdownNow()
+                log.warning("[FamilyHeart] Interrupted while draining SQLite executor during shutdown")
+            }
+        }
         if (::ds.isInitialized) ds.close()
-        if (::executorImpl.isInitialized) executorImpl.shutdownNow()
     }
 }
 

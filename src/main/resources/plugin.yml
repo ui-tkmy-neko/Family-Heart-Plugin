@@ -1,7 +1,7 @@
 name: familyheartplugin
 description: Family relationship and RP plugin
 prefix: [ Family ]
-version: '1.0.0'
+version: '${project.version}'
 
 main: nekouidaga.net.familyheartplugin.FamilyHeartPlugin
 api-version: '26.2'
@@ -19,6 +19,7 @@ commands:
 permissions:
   familyheart.use: { default: true }
   familyheart.family: { default: true }
+  familyheart.info: { default: true }
   familyheart.marry: { default: true }
   familyheart.divorce: { default: true }
   familyheart.child: { default: true }

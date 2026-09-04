@@ -31,6 +31,7 @@ class ActionService(
 ) {
     private val cooldown = ConcurrentHashMap<String, Long>()
     private val counts = ConcurrentHashMap<UUID, AtomicInteger>()
+    private val queued = ConcurrentHashMap<String, Boolean>()
 
     fun execute(
         actor: Player,
@@ -39,7 +40,10 @@ class ActionService(
         onApproval: (Long) -> Unit
     ): Result {
         if (actor.uniqueId == target.uniqueId) return Result(false, "self")
-        if (!rel.isLoaded(actor.uniqueId) || !rel.isLoaded(target.uniqueId)) return Result(false, "loading")
+        if (!rel.isLoaded(actor.uniqueId) || !rel.isLoaded(target.uniqueId)) {
+            queueUntilRelationshipsLoaded(actor, target, action, onApproval)
+            return Result(false, "loading")
+        }
         if (actor.world.uid != target.world.uid) return Result(false, "distance")
         if (actor.location.distanceSquared(target.location) > settings.range() * settings.range()) {
             return Result(false, "distance")
@@ -54,10 +58,17 @@ class ActionService(
                 actor.uniqueId,
                 target.uniqueId,
                 RequestType.SKINSHIP,
-                action
+                action,
+                actor.name,
+                target.name
             )
             future.thenAccept { id ->
-                Bukkit.getScheduler().runTask(p, Runnable { onApproval(id) })
+                Bukkit.getScheduler().runTask(p, Runnable {
+                    onApproval(id)
+                    if (target.isOnline) {
+                        target.sendMessage(messages.get(messages.requestKey(RequestType.SKINSHIP, "received", action), mapOf("player" to actor.name, "target" to target.name, "request_id" to id.toString())))
+                    }
+                })
             }.exceptionally { t ->
                 p.logger.warning("[FamilyHeart] Failed to create skinship request: ${t.message}")
                 Bukkit.getScheduler().runTask(p, Runnable {
@@ -79,6 +90,49 @@ class ActionService(
             null
         }
         return Result(true, "ok")
+    }
+
+
+    private fun queueUntilRelationshipsLoaded(
+        actor: Player,
+        target: Player,
+        action: String,
+        onApproval: (Long) -> Unit
+    ) {
+        val key = "${actor.uniqueId}:${target.uniqueId}:${action.lowercase()}"
+        if (queued.putIfAbsent(key, true) != null) return
+
+        rel.load(actor.uniqueId)
+        rel.load(target.uniqueId)
+
+        fun poll(attempt: Int) {
+            Bukkit.getScheduler().runTaskLater(p, Runnable {
+                val currentActor = Bukkit.getPlayer(actor.uniqueId)
+                val currentTarget = Bukkit.getPlayer(target.uniqueId)
+                if (currentActor == null || currentTarget == null) {
+                    queued.remove(key)
+                    return@Runnable
+                }
+                if (rel.isLoaded(currentActor.uniqueId) && rel.isLoaded(currentTarget.uniqueId)) {
+                    queued.remove(key)
+                    val result = execute(currentActor, currentTarget, action, onApproval)
+                    if (result.reason == "loading") {
+                        // A newer relationship generation was requested; allow one more pass.
+                        queueUntilRelationshipsLoaded(currentActor, currentTarget, action, onApproval)
+                    }
+                    return@Runnable
+                }
+                if (attempt >= 40) {
+                    queued.remove(key)
+                    Bukkit.getScheduler().runTask(p, Runnable {
+                        if (currentActor.isOnline) currentActor.sendMessage(messages.get("general.relationship-loading-timeout"))
+                    })
+                    return@Runnable
+                }
+                poll(attempt + 1)
+            }, 1L)
+        }
+        poll(0)
     }
 
     private fun doIt(actor: Player, target: Player, action: String, requestId: Long? = null): CompletableFuture<Void> {
@@ -104,6 +158,11 @@ class ActionService(
         if (p.config.getBoolean("skinship.particles", true)) {
             target.world.spawnParticle(particle, target.location.clone().add(0.0, 1.0, 0.0), 12, 0.3, 0.5, 0.3, 0.05)
         }
+        // バグ修正(監査): messages.yml の action.received (「%player% から %action% を受けました」)は
+        // ターゲット向けの通知として定義されているが、これまでdoIt()内のどの経路からも
+        // 送信されておらず、hug/kiss/feedを受け取った側にはパーティクル/サウンド以外の
+        // フィードバックが一切無かった(実行者側にはaction.executedが届いていた)。
+        target.sendMessage(messages.get("action.received", mapOf("player" to actor.name, "action" to action)))
         if (p.config.getBoolean("skinship.sounds", true)) {
             actor.playSound(actor.location, sound, 1f, 1f)
             target.playSound(target.location, sound, 1f, 1f)
@@ -127,19 +186,17 @@ class ActionService(
         return Result(true, "ok")
     }
 
-    /** Persist the idempotency intent before any SKINSHIP side effect is executed. */
+    /** Compatibility wrapper: request state is held in memory; action itself is durably logged. */
     fun prepareRequestAction(requestId: Long, actor: UUID, target: UUID, action: String): CompletableFuture<ActionExecutionState> =
-        CompletableFuture.supplyAsync({
-            db.connection().use { c -> c.tx { dao.beginRequestAction(c, requestId, actor, target, action) } }
-        }, db.executor)
+        CompletableFuture.completedFuture(ActionExecutionState.INTENT)
 
-    /** Main-thread validation + execution for a SKINSHIP request. The request action must already have a durable INTENT. */
+    /** Main-thread validation + execution for a transient SKINSHIP request. */
     fun approvedPersistent(actor: Player, target: Player, action: String, requestId: Long): CompletableFuture<Result> {
-        check(Bukkit.isPrimaryThread()) { "ActionService.approvedPersistent must run on the main thread" }
+        check(Bukkit.isPrimaryThread()) { "ActionService.approvedPersistent must be called on the main thread" }
         if (actor.uniqueId == target.uniqueId) return CompletableFuture.completedFuture(Result(false, "self"))
         if (actor.world.uid != target.world.uid) return CompletableFuture.completedFuture(Result(false, "distance"))
         if (actor.location.distanceSquared(target.location) > settings.range() * settings.range()) return CompletableFuture.completedFuture(Result(false, "distance"))
-        return doIt(actor, target, action, requestId).thenApply { Result(true, "ok") }
+        return doIt(actor, target, action, null).thenApply { Result(true, "ok") }
     }
 
     fun actionCount(uuid: UUID): Int = counts[uuid]?.get() ?: 0

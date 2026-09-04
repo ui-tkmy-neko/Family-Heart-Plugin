@@ -1,8 +1,11 @@
 package nekouidaga.net.familyheartplugin.config
 
 import nekouidaga.net.familyheartplugin.model.BuffDefinition
-import org.bukkit.plugin.java.JavaPlugin
+import org.bukkit.Material
 import org.bukkit.configuration.file.YamlConfiguration
+import org.bukkit.enchantments.Enchantment
+import org.bukkit.potion.PotionEffectType
+import org.bukkit.plugin.java.JavaPlugin
 
 class Settings(private val p: JavaPlugin) {
     @Volatile private var buffCache: List<BuffDefinition> = emptyList()
@@ -20,12 +23,13 @@ class Settings(private val p: JavaPlugin) {
     fun actionCooldown(a: String) = p.config.getLong("actions.$a.cooldown-seconds", p.config.getLong("skinship.default-cooldown-seconds", 0))
     fun features(k: String) = p.config.getBoolean("features.$k", true)
     fun buffs(): List<BuffDefinition> = buffCache
+
     private fun loadBuffs(): List<BuffDefinition> {
         val file = p.dataFolder.resolve("buffs.yml")
         if (!file.exists()) p.saveResource("buffs.yml", false)
         val c = YamlConfiguration.loadConfiguration(file)
         val section = c.getConfigurationSection("family-buffs") ?: return emptyList()
-        return section.getKeys(false).mapNotNull { key: String ->
+        return section.getKeys(false).mapNotNull { key ->
             val x = section.getConfigurationSection(key) ?: return@mapNotNull null
             BuffDefinition(
                 key,
@@ -39,4 +43,8 @@ class Settings(private val p: JavaPlugin) {
             )
         }
     }
+
+    fun requestExpireSeconds(): Long = p.config.getLong("request-expire-seconds", 300L).coerceAtLeast(30L)
+    fun infoChildListThreshold(): Int = p.config.getInt("info.child-list-threshold", 5).coerceAtLeast(1)
+    fun infoChildPageSize(): Int = p.config.getInt("info.child-page-size", 7).coerceIn(1, 7)
 }

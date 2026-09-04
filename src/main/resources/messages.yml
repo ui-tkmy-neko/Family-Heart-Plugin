@@ -4,6 +4,8 @@ general:
   no-permission: "&c権限がありません。"
   invalid-input: "&c入力が正しくありません。"
   database-error: "&cデータベース処理でエラーが発生しました。"
+  relationship-loading: "&e関係情報を読み込んでいます。読み込み完了後に申請を処理します。"
+  relationship-loading-timeout: "&c関係情報の読み込みが完了しませんでした。少し待ってからもう一度お試しください。"
   target-not-found: "&c対象プレイヤーが見つかりません。"
   offline: "&c対象プレイヤーがオフラインです。"
   distance: "&c対象が距離範囲外です。"
@@ -26,8 +28,73 @@ request:
   offline-cancel: "&c申請関係者がオフラインになったため申請をキャンセルしました。"
   expired: "&c申請の有効期限が切れました。"
   marriage-role-required: "&e結婚申請は /fh accept husband または /fh accept wife で承認してください。"
-  marriage-same-role: "&c申請者と同じ配偶者役は選択できません。"
   duplicate-pending: "&c同じ相手への同種の申請がすでに保留中です。"
+  not-found: "&c受理できる保留中の申請が見つかりません。"
+  marry:
+    sent:
+      wife: "&d%target%&f に、妻役として結婚したいと申請しました。&7 #%request_id%"
+      husband: "&d%target%&f に、夫役として結婚したいと申請しました。&7 #%request_id%"
+    received:
+      wife: "&d%player%&f が、妻役として結婚したいと言っています。&7 #%request_id%"
+      husband: "&d%player%&f が、夫役として結婚したいと言っています。&7 #%request_id%"
+    accepted:
+      wife: "&a%player%&f の結婚申請を妻役で承認しました。&7 #%request_id%"
+      husband: "&a%player%&f の結婚申請を夫役で承認しました。&7 #%request_id%"
+    denied:
+      wife: "&c%player%&f の妻役としての結婚申請を拒否しました。&7 #%request_id%"
+      husband: "&c%player%&f の夫役としての結婚申請を拒否しました。&7 #%request_id%"
+  child:
+    sent:
+      parent: "&a%target%&f に親になってほしいと申請しました。&7 #%request_id%"
+      child: "&a%target%&f に子として認めてもらう申請をしました。&7 #%request_id%"
+    received:
+      parent: "&a%player%&f から、あなたに親になってほしいという申請が届きました。&7 #%request_id%"
+      child: "&a%player%&f から、あなたに子として認めてほしいという申請が届きました。&7 #%request_id%"
+    accepted:
+      parent: "&a%player%&f の親子関係申請を承認しました。&7 #%request_id%"
+      child: "&a%player%&f の親子関係申請を承認しました。&7 #%request_id%"
+    denied:
+      parent: "&c%player%&f の親子関係申請を拒否しました。&7 #%request_id%"
+      child: "&c%player%&f の親子関係申請を拒否しました。&7 #%request_id%"
+  skinship:
+    hug:
+      sent: "&d%target%&f にハグを申請しました。&7 #%request_id%"
+      received: "&d%player%&f からハグの申請が届きました。&7 #%request_id%"
+      accepted: "&a%player%&f のハグを受けました。&7 #%request_id%"
+      denied: "&c%player%&f のハグ申請を拒否しました。&7 #%request_id%"
+    kiss:
+      sent: "&d%target%&f にキスを申請しました。&7 #%request_id%"
+      received: "&d%player%&f からキスの申請が届きました。&7 #%request_id%"
+      accepted: "&a%player%&f のキスを受けました。&7 #%request_id%"
+      denied: "&c%player%&f のキス申請を拒否しました。&7 #%request_id%"
+    feed:
+      sent: "&d%target%&f に食事を申請しました。&7 #%request_id%"
+      received: "&d%player%&f から食事の申請が届きました。&7 #%request_id%"
+      accepted: "&a%player%&f の食事申請を承認しました。&7 #%request_id%"
+      denied: "&c%player%&f の食事申請を拒否しました。&7 #%request_id%"
+  divorce:
+    sent: "&e%target%&f に離婚申請を送りました。&7 #%request_id%"
+    received: "&e%player%&f から離婚申請が届きました。&7 #%request_id%"
+    accepted: "&a%player%&f の離婚申請を承認しました。&7 #%request_id%"
+    denied: "&c%player%&f の離婚申請を拒否しました。&7 #%request_id%"
+  separation:
+    sent: "&e%target%&f に親子関係の解除を申請しました。&7 #%request_id%"
+    received: "&e%player%&f から親子関係の解除申請が届きました。&7 #%request_id%"
+    accepted: "&a%player%&f の親子関係解除申請を承認しました。&7 #%request_id%"
+    denied: "&c%player%&f の親子関係解除申請を拒否しました。&7 #%request_id%"
+info:
+  title: "&bFamilyHeart情報"
+  summary: "&7FamilyHeart情報"
+  no-spouse: "&7配偶者: &fなし"
+  spouse: "&6配偶者: &f%mcid%"
+  spouse-role: "&7役割: &f%role%"
+  marriage-days: "&7結婚歴: &f%days%日"
+  no-children: "&7子供: &f0人"
+  children: "&a子供: &f%count%人"
+  children-list: "&a子供一覧"
+  child-entry: "&f%mcid%"
+  child-click: "&eクリックで詳細"
+  back: "&c戻る"
 economy:
   insufficient-funds: "&c%cost% 必要ですが、所持金が足りません。"
   unavailable: "&c経済プラグインが利用できないため、この操作にはコストを適用できません。"
@@ -41,4 +108,3 @@ admin:
   info: "&eRelationship: &f%relationship_id% &7%relationship_type% &f%player% ↔ %target%"
   penalty-added: "&aPenalty %value% を追加しました。"
   penalty-removed: "&aPenalty を削除しました。"
-

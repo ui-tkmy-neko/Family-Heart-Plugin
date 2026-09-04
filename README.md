@@ -1,75 +1,360 @@
 # FamilyHeartPlugin
 
-仕様書 v1.2 の Phase 1〜7 を Kotlin で実装した版です。
+FamilyHeartPluginは、Paperサーバー向けの家族・Relationship管理プラグインです。
 
-実装範囲:
-- Phase 1: SQLite、UUID/MCID、Relationship、ID、配偶者、親子、自動親登録、各種制限
-- Phase 2: Request、承認/拒否、オンライン条件、ログアウト時キャンセル
-- Phase 3: Chest GUI、メイン/家族/Relationship/申請/スキンシップ/設定画面
-- Phase 4: Family Buff 条件、YAML設定、定期再計算
-- Phase 5: hug/kiss/feed、距離・最寄り対象、家族外の承認、演出、クールダウン、feed Tab補完除外
-- Phase 6: 管理者 CUI、Relationship 強制削除/初期化、Penalty、Audit Log、reload
-- Phase 7: Relationship キャッシュ、非同期 DB、Prepared Statement、Transaction、SQLite single-writer transaction
+結婚、離婚、親子関係、スキンシップ、申請管理など、プレイヤー間のRelationshipを管理する機能を提供します。
 
-設定:
-- config.yml
-- messages.yml
-- gui.yml
-- buffs.yml
-- penalties.yml
+## 対応環境
 
-ビルド:
-`mvn clean package`
+* Minecraft: 1.21.11
+* Paper: 26.2
+* Java: 24以上
+* データベース: SQLite
 
-生成物:
-`target/familyheart-plugin.jar`
+### Soft Dependency
 
-Paper 26.2 / Java 25 / Maven を対象としています。
-Maven がインストール済みなら、プロジェクトフォルダで `mvn clean package` を実行してください。
+以下のプラグインに対応しています。
 
+* Geyser
+* Floodgate
+* LuckPerms
+* Vault
 
-## 結婚申請（同性ペア対応）
-`/fh marry [MCID] {husband|wife}` で申請者の役割を指定し、対象側は `/fh accept [requestId] {husband|wife}` で自身の役割を指定して承認します。申請者と対象者が同じ役割（wife×wife / husband×husband）になる承認は拒否されます。
+これらは必須依存ではありません。
 
-## Maven build
+## 主な機能
 
-このプロジェクトは Maven + Kotlin です。
+### 結婚
+
+プレイヤー間で結婚関係を作成できます。
+
+* 結婚申請
+* 夫・妻の役割選択
+* 同性婚
+* 結婚情報の確認
+* 離婚
+
+夫・妻はRelationship上の役割として扱われます。
+
+### 親子関係
+
+プレイヤー間で親子関係を設定できます。
+
+* 親からの申請
+* 子からの申請
+* 親子関係の確認
+* 子供一覧の表示
+
+### スキンシップ
+
+プレイヤー同士で以下のアクションを利用できます。
+
+* `hug`
+* `kiss`
+* `feed`
+
+対象プレイヤーへの申請が必要なアクションについては、申請システムを介して処理されます。
+
+### 申請管理
+
+Relationshipに関する申請を管理できます。
+
+申請には有効期限が設定されており、期限を過ぎた申請は自動的に失効します。
+
+プレイヤーがログアウトした場合、そのプレイヤーに関連する処理中の申請も適切に処理されます。
+
+申請状態はサーバーの稼働中にメモリ上で管理され、申請履歴は専用ログに記録されます。
+
+### Relationship情報
+
+プレイヤーのRelationship情報を確認できます。
+
+確認できる主な情報:
+
+* 配偶者
+* 配偶者の役割
+* 結婚期間
+* 子供
+* 子供の人数
+
+他のプレイヤーの情報も、権限に応じて確認できます。
+
+### GUI
+
+GUIからFamilyHeartPluginの各機能を操作できます。
+
+主なメニュー:
+
+* 家族情報
+* 配偶者情報
+* 親子関係
+* スキンシップ
+* 申請一覧
+* Relationship情報
+* Info
+* 設定
+
+GUIにはページ移動や戻る操作が用意されています。
+
+## コマンド
+
+基本コマンド:
 
 ```text
-mvn clean package
+/fh
 ```
 
-生成物は `target/familyheartplugin.jar` です。
+Info:
 
-### `Cannot find main class nekouidaga.net.familyheartplugin.FamilyHeartPlugin` が出る場合
+```text
+/fh info
+/fh info <MCID>
+/fh info <MCID> child
+```
 
-JAR が古い、または Kotlin のコンパイル結果が入っていない可能性があります。必ずこのプロジェクトのルートで `mvn clean package` を実行し、既存の同名 JAR を `plugins` から取り除いてから、新しく生成された `target/familyheartplugin.jar` を使用してください。
+申請:
 
-`plugin.yml` の main は次のクラスです。
+```text
+/fh requests
+/fh requests accept <ID>
+/fh requests deny <ID>
+```
+
+詳細なコマンドは、サーバー上で `/fh` のヘルプを確認してください。
+
+## MCID
+
+FamilyHeartPluginでは、プレイヤーのMCIDをそのまま識別情報として扱います。
+
+特にGeyser / Floodgate環境では、BedrockプレイヤーのMCIDが以下のような形式になる場合があります。
+
+```text
+.LisaLunaU1
+```
+
+この`.`を含め、MCIDは変更・正規化されません。
+
+そのため、以下は別のMCIDとして扱われます。
+
+```text
+.LisaLunaU1
+LisaLunaU1
+```
+
+## データ保存
+
+FamilyHeartPluginではSQLiteを使用します。
+
+データベースは以下に保存されます。
+
+```text
+plugins/familyheartplugin/data/familyheart.db
+```
+
+Relationshipやプレイヤー情報など、サーバー再起動後も保持する必要があるデータが保存されます。
+
+申請のライブ状態はデータベースではなく、サーバーのメモリ上で管理されます。
+
+## ログ
+
+申請に関する操作は専用ログへ記録されます。
+
+ログディレクトリ:
+
+```text
+plugins/familyheartplugin/logs/
+```
+
+現在のログ:
+
+```text
+plugins/familyheartplugin/logs/latest.log
+```
+
+ログは一定サイズに達すると自動的にローテーションされます。
+
+ローテーション後のログ:
+
+```text
+plugins/familyheartplugin/logs/log-0001.log.gz
+plugins/familyheartplugin/logs/log-0002.log.gz
+```
+
+ログにはプレイヤーを以下の形式で記録します。
+
+```text
+MCID(UUID)
+```
+
+例:
+
+```text
+.LisaLunaU1(00000000-0000-0000-0000-000000000000)
+```
+
+## 設定ファイル
+
+主な設定ファイル:
+
+```text
+plugins/familyheartplugin/config.yml
+plugins/familyheartplugin/gui.yml
+plugins/familyheartplugin/messages.yml
+plugins/familyheartplugin/buffs.yml
+plugins/familyheartplugin/penalties.yml
+```
+
+### 申請有効期限
+
+`config.yml`:
 
 ```yaml
-main: nekouidaga.net.familyheartplugin.FamilyHeartPlugin
+request-expire-seconds: 300
 ```
 
+単位は秒です。
 
-Build: `mvn clean package`
+### 子供一覧の表示条件
 
+```yaml
+info:
+  child-list-threshold: 5
+```
 
-## DB consistency (v3)
+指定した人数以上の子供がいる場合、子供一覧画面を使用します。
 
-- Relationship mutations write to SQLite first and refresh affected relationship caches immediately after commit.
-- 外部プラグイン・外部ツールからのDB直接変更は非推奨かつサポート対象外です。外部連携が必要な場合はFamilyHeart API/Serviceを経由してください。
-- DB同期はFamilyHeart自身の書き込み、サーバー起動、Player Join、期限切れ処理を基準に行います。
-- Relationship cache refreshes are serialized to prevent stale async reads from overwriting newer state.
-- Pending request duplication is protected by both application checks and a SQLite unique pending key.
-- Auto-parent relationships store their source spouse Relationship ID so divorce/reset removes only relationships created from that source.
-- Economy charges for request-based relationship operations are applied on acceptance/success, not request creation.
-- Buff clear/recompute removes actual PotionEffects as well as internal tracking.
+### 子供一覧のページサイズ
 
+```yaml
+info:
+  child-page-size: 7
+```
 
+1ページに表示する子供の人数を指定します。
 
-## Database
+## プラグインディレクトリ
 
-FamilyHeart uses SQLite for persistence. The database file (`familyheart.db` by default) is created automatically on first startup. HikariCP uses a single SQLite connection because SQLite serializes writes; plugin-side database work remains asynchronous. SQLite WAL mode, `foreign_keys=ON`, `synchronous=FULL`, and a configurable busy timeout are enabled.
+標準的な構成は以下のとおりです。
 
-Important state changes are committed transaction-by-transaction. A successful plugin-side operation is therefore persisted immediately after its DB transaction commits; the plugin does not depend on periodic full-cache polling for persistence.
+```text
+plugins/
+└── familyheartplugin/
+    ├── config.yml
+    ├── gui.yml
+    ├── messages.yml
+    ├── buffs.yml
+    ├── penalties.yml
+    ├── data/
+    │   └── familyheart.db
+    └── logs/
+        ├── latest.log
+        ├── log-0001.log.gz
+        └── log-0002.log.gz
+```
+
+## バックアップ
+
+サーバーのバックアップを作成する場合、以下をバックアップ対象にしてください。
+
+```text
+plugins/familyheartplugin/
+```
+
+特に以下は重要です。
+
+```text
+plugins/familyheartplugin/data/familyheart.db
+plugins/familyheartplugin/config.yml
+plugins/familyheartplugin/gui.yml
+plugins/familyheartplugin/messages.yml
+```
+
+Relationship情報を失わないため、SQLiteデータベースは定期的にバックアップすることを推奨します。
+
+## 運営時の注意
+
+### MCIDを変更しない
+
+Floodgateを利用している場合を含め、MCIDを加工しないでください。
+
+`.`などの接頭辞もMCIDの一部として扱われます。
+
+### SQLiteを直接編集しない
+
+通常の運用ではSQLiteデータベースを直接編集しないでください。
+
+Relationshipデータに問題が発生した場合は、まずサーバーログおよびFamilyHeartPluginのログを確認してください。
+
+### ログを保存する
+
+申請やRelationshipに関する問題を調査する際には、以下のログが重要になります。
+
+```text
+plugins/familyheartplugin/logs/latest.log
+```
+
+必要に応じて、ローテーション済みの`.log.gz`も確認してください。
+
+## トラブルシューティング
+
+### プレイヤーが見つからない
+
+以下を確認してください。
+
+* MCIDが正確か
+* Floodgateプレイヤーの場合`.`を含めているか
+* 対象プレイヤーがオンラインか
+* Geyser / Floodgateの状態に問題がないか
+
+### 申請が表示されない
+
+以下を確認してください。
+
+* 申請が期限切れになっていないか
+* 申請者または対象者がログアウトしていないか
+* `/fh requests` で申請一覧を確認する
+* `plugins/familyheartplugin/logs/latest.log` を確認する
+
+### Relationship情報がおかしい
+
+以下を確認してください。
+
+1. FamilyHeartPluginのログ
+2. Paperのサーバーログ
+3. SQLiteデータベース
+4. プレイヤーのMCIDとUUID
+5. 関連する申請履歴
+
+問題の再現条件とログを保存した上で調査してください。
+
+## 権限
+
+FamilyHeartPluginでは権限による機能制御に対応しています。
+
+主な権限:
+
+```text
+familyheart.info
+```
+
+その他の権限については、導入しているバージョンの`plugin.yml`を確認してください。
+
+## ライセンス
+
+本ソフトウェアのライセンスについては、配布物に同梱されている`LICENSE`を確認してください。
+
+## サポート
+
+不具合を報告する場合は、可能な限り以下の情報を添えてください。
+
+* Minecraft / Paperバージョン
+* Javaバージョン
+* FamilyHeartPluginバージョン
+* 使用している関連プラグイン
+* 発生した操作
+* 発生した日時
+* Paperのエラーログ
+* FamilyHeartPluginの`latest.log`
+* 再現手順
+
+プレイヤーのUUIDやMCIDなどを含むログを外部へ公開する場合は、公開範囲に注意してください。

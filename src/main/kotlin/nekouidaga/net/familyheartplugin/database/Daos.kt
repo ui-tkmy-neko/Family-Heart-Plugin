@@ -14,8 +14,11 @@ class PlayerDao {
             it.setString(1, u.toString()); it.setString(2, n); it.setTimestamp(3, t); it.setTimestamp(4, t); it.executeUpdate()
         }
     }
-    fun byMcid(c: Connection, n: String): UUID? = c.prepareStatement("SELECT uuid FROM players WHERE mcid=? ORDER BY last_seen DESC LIMIT 1").use {
-        it.setString(1, n); it.executeQuery().use { r -> if (r.next()) UUID.fromString(r.getString(1)) else null }
+    fun byMcid(c: Connection, n: String): UUID? = c.prepareStatement("SELECT uuid FROM players WHERE lower(mcid)=lower(?) ORDER BY last_seen DESC LIMIT 1").use {
+        it.setString(1, n.trim()); it.executeQuery().use { r -> if (r.next()) UUID.fromString(r.getString(1)) else null }
+    }
+    fun mcidByUuid(c: Connection, u: UUID): String? = c.prepareStatement("SELECT mcid FROM players WHERE uuid=? LIMIT 1").use {
+        it.setString(1, u.toString()); it.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
     }
 }
 
@@ -104,48 +107,6 @@ class RelationshipDao {
     fun byId(c: Connection, id: String, lock: Boolean = false) = c.prepareStatement("SELECT * FROM relationships WHERE relationship_id=? AND status='ACTIVE'" + if (lock) "" else "").use { it.setString(1, id); it.executeQuery().use { r -> if (r.next()) map(r) else null } }
     fun remove(c: Connection, id: Long) { c.prepareStatement("UPDATE relationships SET status='REMOVED',updated_at=? WHERE internal_id=?").use { it.setTimestamp(1, Timestamp.from(Instant.now())); it.setLong(2, id); it.executeUpdate() } }
     fun history(c: Connection, id: String, action: String, actor: UUID?, target: UUID?, reason: String?) { c.prepareStatement("INSERT INTO relationship_history(relationship_id,action,actor,target,reason,created_at) VALUES(?,?,?,?,?,?)").use { it.setString(1, id); it.setString(2, action); it.setString(3, actor?.toString()); it.setString(4, target?.toString()); it.setString(5, reason); it.setTimestamp(6, Timestamp.from(Instant.now())); it.executeUpdate() } }
-}
-
-class RequestDao {
-    private fun pendingKey(a: UUID, t: UUID, ty: RequestType): String {
-        val first = minOf(a.toString(), t.toString())
-        val second = maxOf(a.toString(), t.toString())
-        return "$ty:$first:$second"
-    }
-    fun create(c: Connection, a: UUID, t: UUID, ty: RequestType, m: String?): Long {
-        c.prepareStatement("INSERT INTO requests(requester,target,type,metadata,status,created_at,updated_at,pending_key,processing_guard) VALUES(?,?,?,?,?,?,?,?,NULL)").use {
-            val n = Timestamp.from(Instant.now()); it.setString(1, a.toString()); it.setString(2, t.toString()); it.setString(3, ty.name); it.setString(4, m); it.setString(5, RequestStatus.PENDING.name); it.setTimestamp(6, n); it.setTimestamp(7, n); it.setString(8, pendingKey(a, t, ty)); it.executeUpdate()
-            return c.createStatement().use { st ->
-                st.executeQuery("SELECT last_insert_rowid()").use { r ->
-                    if (!r.next()) throw IllegalStateException("request insert id missing")
-                    r.getLong(1)
-                }
-            }
-        }
-    }
-    private fun map(r: ResultSet) = RelationshipRequest(r.getLong("id"), UUID.fromString(r.getString("requester")), UUID.fromString(r.getString("target")), RequestType.valueOf(r.getString("type")), r.getString("metadata"), RequestStatus.valueOf(r.getString("status")), r.getTimestamp("created_at").toInstant(), r.getTimestamp("updated_at").toInstant(), r.getString("processing_guard")?.let { RequestProcessingGuard.valueOf(it) })
-    fun byId(c: Connection, id: Long, lock: Boolean = false) = c.prepareStatement("SELECT * FROM requests WHERE id=?" + if (lock) "" else "").use { it.setLong(1, id); it.executeQuery().use { r -> if (r.next()) map(r) else null } }
-    fun pendingFor(c: Connection, u: UUID) = c.prepareStatement("SELECT * FROM requests WHERE target=? AND status='PENDING' ORDER BY id DESC").use { it.setString(1, u.toString()); it.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } } }
-    fun pendingInvolving(c: Connection, u: UUID) = c.prepareStatement("SELECT * FROM requests WHERE status='PENDING' AND (requester=? OR target=?) ORDER BY id DESC").use { it.setString(1, u.toString()); it.setString(2, u.toString()); it.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } } }
-    fun pendingBetween(c: Connection, a: UUID, b: UUID, ty: RequestType): List<RelationshipRequest> =
-        // バグ修正: 以前はcreate()が単純INSERTのみで既存のPENDING申請を確認しておらず、
-        // 同じ相手に同種の申請を連投すると保留中の申請が際限なく増えていた(⑦)。
-        // SQLiteでは単一DB接続で書き込みを直列化しているため、行ロック構文は不要。
-        c.prepareStatement("SELECT * FROM requests WHERE status IN ('PENDING','PROCESSING') AND type=? AND ((requester=? AND target=?) OR (requester=? AND target=?))").use {
-            it.setString(1, ty.name); it.setString(2, a.toString()); it.setString(3, b.toString()); it.setString(4, b.toString()); it.setString(5, a.toString())
-            it.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
-        }
-    fun update(c: Connection, id: Long, s: RequestStatus) { c.prepareStatement("UPDATE requests SET status=?,updated_at=?,pending_key=CASE WHEN ? IN ('PENDING','PROCESSING') THEN pending_key ELSE NULL END,processing_guard=CASE WHEN ?='PROCESSING' THEN processing_guard ELSE NULL END WHERE id=?").use { it.setString(1, s.name); it.setTimestamp(2, Timestamp.from(Instant.now())); it.setString(3, s.name); it.setString(4, s.name); it.setLong(5, id); it.executeUpdate() } }
-    fun setProcessingGuard(c: Connection, id: Long, guard: RequestProcessingGuard?) {
-        c.prepareStatement("UPDATE requests SET processing_guard=?,updated_at=? WHERE id=? AND status='PROCESSING'").use {
-            it.setString(1, guard?.name); it.setTimestamp(2, Timestamp.from(Instant.now())); it.setLong(3, id); it.executeUpdate()
-        }
-    }
-    fun cancelFor(c: Connection, u: UUID) { c.prepareStatement("UPDATE requests SET status='CANCELLED',updated_at=?,pending_key=NULL WHERE status='PENDING' AND (requester=? OR target=?)").use { it.setTimestamp(1, Timestamp.from(Instant.now())); it.setString(2, u.toString()); it.setString(3, u.toString()); it.executeUpdate() } }
-
-    fun recoverProcessing(c: Connection) {
-        c.prepareStatement("UPDATE requests SET status='PENDING', updated_at=CURRENT_TIMESTAMP WHERE status='PROCESSING' AND processing_guard IS NULL AND updated_at < datetime('now','-2 minutes')").use { it.executeUpdate() }
-    }
 }
 
 class ActionDao {
