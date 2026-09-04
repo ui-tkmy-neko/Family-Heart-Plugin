@@ -45,4 +45,6 @@ class Settings(private val p: JavaPlugin) {
     }
 
     fun requestExpireSeconds(): Long = p.config.getLong("request-expire-seconds", 300L).coerceAtLeast(30L)
+    fun infoChildListThreshold(): Int = p.config.getInt("info.child-list-threshold", 5).coerceAtLeast(1)
+    fun infoChildPageSize(): Int = p.config.getInt("info.child-page-size", 7).coerceIn(1, 7)
 }

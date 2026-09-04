@@ -1,4 +1,7 @@
 request-expire-seconds: 300
+info:
+  child-list-threshold: 5
+  child-page-size: 7
 
 database:
   # SQLite: the database file is created automatically on first startup.
